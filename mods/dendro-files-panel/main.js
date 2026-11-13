@@ -155,7 +155,7 @@ export default class Files extends View {
       const icon = !entry.dir ? image(fileIcon(entry.name)).size(16).flex_none()
         : typed ? image(typed).size(16).flex_none()
         : svg(plainFolder(open)).size(16).flex_none().text_color(color);
-      const editing = !entry.dir && shared("dendro.open")?.path === `${this.root}/${path}`;
+      const editing = !entry.dir && this.opened === `${this.root}/${path}`;
       out.push(h_flex().id(`file-${path}`).relative().when(editing, el => el.bg(t.selected)).h(26).flex_none().pl(8 + depth * INDENT).pr(8).gap(6).items_center().rounded(6).cursor_pointer().hover(s => s.bg(t.hover))
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
         .children(guides.map((c, i) => div().absolute().top(0).bottom(0).left(8 + i * INDENT + 5.5).w(1).bg(alpha(c, "66"))))
@@ -171,6 +171,7 @@ export default class Files extends View {
   render(cx) {
     if (key() !== this.context?.key) this.refresh(cx);
     const t = theme();
+    this.opened = shared("dendro.open")?.path ?? null; // the file the editor shows, for the row highlight
     return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Files"))

@@ -11,7 +11,7 @@ const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", 
 const languageOf = (path) => {
   const name = path.split(/[\\/]/).pop().toLowerCase();
   const ext = name.includes(".") ? name.split(".").pop() : name;
-  return LANG[ext] ?? ext;
+  return Object.prototype.hasOwnProperty.call(LANG, ext) ? LANG[ext] : ext;
 };
 const OPEN = "dendro.open", DIRTY = "dendro.editor.dirty";
 const showCenter = (child) => run("layout.select", { stack: "center", child });
@@ -22,8 +22,12 @@ export default class DendroEditor extends View {
     this.active = null;
     this.seen = undefined;   // the last open request handled
     this.handle = cx.focus_handle();
+    if (shared(DIRTY)) setShared(DIRTY, 0); // left over from a run that ended with unsaved edits
     cx.timer.every(2000, (cx) => this.poll(cx));
   }
+
+  // Layout switched or app quitting: nothing is open any more.
+  async close() { setShared(DIRTY, 0); }
 
   doc(path = this.active) { return this.docs.find((d) => d.path === path) ?? null; }
 
@@ -42,7 +46,7 @@ export default class DendroEditor extends View {
     cx.spawn(async (cx) => {
       try {
         const text = await readTextFile(d.path, { on: d.on });
-        if (text === null) d.error = "This file no longer exists";
+        if (text === null) { if (d.state) d.gone = true; else d.error = "This file no longer exists"; }
         else if (text.includes("\0")) d.error = "Binary file · can't edit";
         else this.setText(d, text);
       } catch { d.error = "Can't open this file (over 1 MiB, or unreadable)"; }
@@ -51,7 +55,7 @@ export default class DendroEditor extends View {
   }
 
   setText(d, text) {
-    d.saved = text; d.dirty = false; d.error = null; d.conflict = false;
+    d.saved = text; d.dirty = false; d.error = null; d.conflict = false; d.gone = false; d.note = null;
     if (d.state) { d.state.set_value(text); return; }
     const t = theme();
     d.state = EditorState.new({
@@ -76,28 +80,47 @@ export default class DendroEditor extends View {
     if (!d?.state || d.busy) return;
     cx.spawn(async (cx) => {
       const text = await readTextFile(d.path, { on: d.on }).catch(() => undefined);
-      if (text === undefined || text === d.saved) return;
-      if (text === null) { d.error = "This file was deleted"; }
-      else if (!d.dirty) this.setText(d, text);
-      else d.conflict = true;
+      if (text === undefined) return;
+      const before = `${d.gone}${d.conflict}${d.saved === text}`;
+      if (text === null) d.gone = true;
+      else {
+        d.gone = false;
+        if (text !== d.saved) { if (d.dirty) d.conflict = true; else this.setText(d, text); }
+      }
+      // Redraw only when something changed: every redraw repaints the whole window.
+      if (before === `${d.gone}${d.conflict}${d.saved === text}`) return;
       cx.notify();
     });
   }
 
   save(cx, overwrite = false) {
     const d = this.doc();
-    if (!d?.state || d.on || (!d.dirty && !overwrite) || d.busy) return;
+    if (!d?.state || d.on || (!d.dirty && !overwrite && !d.gone) || d.busy) return;
     const text = d.state.value();
     d.busy = true;
     cx.spawn(async (cx) => {
       try {
-        const expected = overwrite ? await readTextFile(d.path) : d.saved;
+        const expected = overwrite || d.gone ? await readTextFile(d.path) : d.saved;
         await writeTextFile(d.path, text, expected ?? null);
-        d.saved = text; d.dirty = d.state.value() !== text; d.conflict = false; d.note = null;
+        d.saved = text; d.dirty = d.state.value() !== text; d.conflict = false; d.gone = false; d.note = null;
       } catch (e) {
-        d.conflict = true; d.note = `Not saved: the file changed on disk`;
+        // A changed file gets the reload / keep-mine choice; anything else (read-only, too big) just says why.
+        const now = await readTextFile(d.path).catch(() => undefined);
+        if (now === null) d.gone = true;
+        else if (now !== undefined && now !== d.saved) { d.conflict = true; d.note = "Not saved: the file changed on disk"; }
+        else d.note = `Not saved: ${e?.message ?? e}`;
       } finally { d.busy = false; this.publishDirty(); cx.notify(); }
     });
+    cx.notify();
+  }
+
+  // Drop what's typed here and show the file as it is on disk.
+  reload(cx) {
+    const d = this.doc();
+    if (!d) return;
+    d.dirty = false; d.conflict = false; d.note = null;
+    this.publishDirty();
+    this.load(d, cx);
     cx.notify();
   }
 
@@ -153,11 +176,12 @@ export default class DendroEditor extends View {
         .when(Boolean(d.on), (e) => e.child(div().text_color(t.muted).child(`read-only · ${d.on}`)))
         .when(d.discard, (e) => e.child(div().text_color(t.blocked).child("Unsaved changes · × again to discard")))
         .child(div().text_color(t.dim).child(languageOf(d.path)))
-        .when(!d.on, (e) => e.child(button("dendro-save", d.busy ? "Saving…" : "Save", d.dirty && !d.busy, (_e, cx) => this.save(cx), true)))))
-      .when(Boolean(d?.conflict), (el) => el.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().bg(/^#[0-9a-f]{6}$/i.test(t.blocked) ? t.blocked + "22" : t.raised).text_size(12)
-        .child(div().flex_1().min_w(0).child(d.note ?? "Changed on disk while you were editing"))
-        .child(button("dendro-reload", "Reload (discard mine)", true, (_e, cx) => { d.dirty = false; this.publishDirty(); this.poll(cx); d.conflict = false; cx.notify(); }))
-        .child(button("dendro-overwrite", "Keep mine & save", true, (_e, cx) => this.save(cx, true), true))))
+        .when(!d.on, (e) => e.child(button("dendro-save", d.busy ? "Saving…" : "Save", (d.dirty || d.gone) && !d.busy, (_e, cx) => this.save(cx), true)))))
+      .when(Boolean(d && (d.conflict || d.gone || d.note)), (el) => el.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().bg(/^#[0-9a-f]{6}$/i.test(t.blocked) ? t.blocked + "22" : t.raised).text_size(12)
+        .child(div().flex_1().min_w(0).child(d.gone ? "This file was deleted on disk · Save puts it back" : d.note ?? "Changed on disk while you were editing"))
+        .when(d.conflict && !d.gone, (e) => e
+          .child(button("dendro-reload", "Reload (discard mine)", true, (_e, cx) => this.reload(cx)))
+          .child(button("dendro-overwrite", "Keep mine & save", true, (_e, cx) => this.save(cx, true), true)))))
       .child(d?.state ? Editor.new(d.state).flex_1().min_h(0)
         : div().flex_1().flex().items_center().justify_center().text_color(t.dim)
           .child(d ? (d.error ?? "Opening…") : "Click a file in Files to open it here"));

@@ -86,15 +86,15 @@ export default class Changes extends View {
         const status = await git(["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"]);
         if (status.code !== 0) throw new Error(status.stderr);
         const head = await git(["rev-parse", "--verify", "HEAD"]);
-        const stats = {};
+        const stats = new Map();
         const results = head.code === 0 ? [await git(["diff", "HEAD", "--numstat", "-z", "--no-renames"])] : [await git(["diff", "--cached", "--numstat", "-z", "--no-renames"]), await git(["diff", "--numstat", "-z", "--no-renames"])];
         for (const result of results) {
           if (result.code !== 0) throw new Error(result.stderr);
           for (const entry of result.stdout.split("\0")) {
             const [a, d, ...parts] = entry.split("\t");
             if (!parts.length) continue;
-            const path = parts.join("\t"), old = stats[path] ?? { add: 0, del: 0 };
-            stats[path] = { add: old.add + (Number(a) || 0), del: old.del + (Number(d) || 0), binary: a === "-" };
+            const path = parts.join("\t"), old = stats.get(path) ?? { add: 0, del: 0 };
+            stats.set(path, { add: old.add + (Number(a) || 0), del: old.del + (Number(d) || 0), binary: a === "-" });
           }
         }
         const files = [];
@@ -103,7 +103,7 @@ export default class Changes extends View {
           const xy = entry.slice(0, 2), path = entry.slice(3), fresh = xy === "??";
           const conflict = xy.includes("U") || xy === "AA" || xy === "DD";
           const s = conflict ? "U" : xy.includes("D") ? "D" : fresh || xy.includes("A") ? "A" : "M";
-          const stat = stats[path] ?? { add: 0, del: 0 };
+          const stat = stats.get(path) ?? { add: 0, del: 0 };
           files.push({ path, status: s, fresh, ...stat });
         }
         if (key() !== context) return;
@@ -219,14 +219,17 @@ export default class Changes extends View {
     cx.spawn(async (cx) => {
       try {
         const current = await readTextFile(`${root}/${line.path}`);
-        if (current === null) throw new Error("gone");
-        const lines = current.split("\n"), i = line.number - 1;
-        if (lines[i] !== line.raw) throw new Error("moved");
+        const lines = current === null ? [] : current.split("\n"), i = line.number - 1;
+        if (lines[i] !== line.raw) throw new Error("stale");
         const cr = line.raw.endsWith("\r") ? "\r" : "";
         lines.splice(i, 1, value + cr, ...(addBelow ? [cr] : []));
         await writeTextFile(`${root}/${line.path}`, lines.join("\n"), current);
         this.note = null;
-      } catch { this.note = "Not saved: the file changed on disk. The diff has been reloaded."; }
+      } catch (e) {
+        // Say which: the line moved under us, or the write itself failed (read-only file, too big, …).
+        this.note = e?.message === "stale" ? "Not saved: the file changed on disk. The diff has been reloaded."
+          : `Not saved: ${e?.message ?? e}`;
+      }
       if (key() !== context || this.open !== line.path) return;
       await this.load(line.path, context).catch(() => {});
       if (addBelow && !this.note) {

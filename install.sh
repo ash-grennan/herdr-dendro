@@ -1,6 +1,7 @@
 #!/bin/sh
 # Copy this layout and its mods into Herdr's home (live-reloads on save).
 set -e
+command -v rsync >/dev/null || { echo "install.sh needs rsync" >&2; exit 1; }
 HOME_DIR="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 here="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$HOME_DIR/layouts" "$HOME_DIR/mods"

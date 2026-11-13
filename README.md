@@ -1,6 +1,6 @@
 # herdr-dendro
 
-A [Herdr](https://herdr.dev) layout based on the default one, with **Changes** and **Files** stacked on the right (50/50, both visible at once), and a Files panel with vscode-icons file icons, coloured folders and indent guides.
+A [Herdr](https://herdr.dev) layout based on the default one, with **Changes** and **Files** stacked on the right (both visible at once), and a Files panel with vscode-icons file icons, coloured folders and indent guides.
 
 - `layouts/dendro.json`: the layout
 - `mods/dendro-diff-panel/`: Changes panel; click a file to swap the panel to its git diff (Esc / ‹ back, ↑↓ or j/k between files)

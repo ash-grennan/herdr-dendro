@@ -70,20 +70,23 @@ const FOLDERS = {
   fixtures: "mock",
 };
 
+// Own keys only: a file named "constructor" must not find Object.prototype's.
+const pick = (map, key) => Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
+
 export function fileIcon(name) {
   const lower = name.toLowerCase();
-  let type = NAMES[lower];
+  let type = pick(NAMES, lower);
   if (!type) for (const [prefix, t] of PREFIXES) if (lower.startsWith(prefix)) { type = t; break; }
   if (!type) {
     const parts = lower.split(".");
-    for (let i = 1; i < parts.length && !type; i++) type = EXT[parts.slice(i).join(".")];
+    for (let i = 1; i < parts.length && !type; i++) type = pick(EXT, parts.slice(i).join("."));
   }
   return type ? `${DIR}/file_type_${type}.svg` : `${DIR}/default_file.svg`;
 }
 
 // A known folder's full-colour icon, or null (draw a tinted folder instead).
 export function folderIcon(name, open) {
-  const type = FOLDERS[name.toLowerCase()];
+  const type = pick(FOLDERS, name.toLowerCase());
   return type ? `${DIR}/folder_type_${type}${open ? "_opened" : ""}.svg` : null;
 }
 

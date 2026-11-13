@@ -19,6 +19,7 @@ export default class Tabs extends View {
     this.scroll = ScrollHandle.new();
     try { this.shells = JSON.parse(localStorage.getItem("shells") ?? "{}"); } catch { this.shells = {}; }
     try { this.autoDone = new Set(JSON.parse(localStorage.getItem("autoShell") ?? "[]")); } catch { this.autoDone = new Set(); }
+    this.tabsSeen = new Set(); // every tab id at the last render, to notice one closing
   }
 
   render() {
@@ -72,20 +73,39 @@ export default class Tabs extends View {
     const live = new Set(terminals().filter(x => x.state !== "finished").map(x => x.address));
     // Opening or bringing back the shell: run() returns nothing, so watch for its pane to appear,
     // then pin it above the chat at SHELL_SHARE of the height.
-    const placing = this.placing && this.placing.tab === tabId && Date.now() < this.placing.until ? this.placing : null;
+    // Followed in the tab it was asked for (not just the shown one), and dropped when it times out.
+    if (this.placing && Date.now() >= this.placing.until) this.placing = null;
+    const placing = this.placing;
     if (placing) {
+      const tabPanes = panes().filter(p => p.tab === placing.tab);
       const pane = tabPanes.find(p => p.terminal && (placing.terminal ? p.terminal === placing.terminal : !placing.before.has(p.terminal)));
       if (pane) {
         this.placing = null;
-        if (!placing.terminal) { this.shells[tabId] = pane.terminal; localStorage.setItem("shells", JSON.stringify(this.shells)); }
+        if (!placing.terminal) { this.shells[placing.tab] = pane.terminal; localStorage.setItem("shells", JSON.stringify(this.shells)); }
         const chat = tabPanes.find(p => p.pane === placing.chat);
         if (chat) {
           if (tabPanes.indexOf(pane) > tabPanes.indexOf(chat)) run("pane.swap", { pane: pane.pane, target: chat.pane });
-          run("layout.resize", { id: pane.pane, weight: 2 * SHELL_SHARE });
-          run("layout.resize", { id: chat.pane, weight: 2 * (1 - SHELL_SHARE) });
+          if (tabPanes.length === 2) {
+            run("layout.resize", { id: pane.pane, weight: 2 * SHELL_SHARE });
+            run("layout.resize", { id: chat.pane, weight: 2 * (1 - SHELL_SHARE) });
+          }
           if (placing.refocus) run("pane.focus", { pane: chat.pane });
         }
       }
+    }
+    // A tab that closed since the last render takes its shell with it: a hidden (parked) one
+    // would otherwise keep running with nothing on screen to show it.
+    const tabsNow = new Set(spaces().flatMap(p => p.tabs ?? []).map(tab => tab.id));
+    if (tabsNow.size) {
+      let pruned = false;
+      for (const id of this.tabsSeen) {
+        if (tabsNow.has(id) || !(id in this.shells)) continue;
+        const gone = this.shells[id];
+        if (live.has(gone) && !panes().some(p => p.terminal === gone)) run("terminal.kill", { terminal: gone });
+        delete this.shells[id]; pruned = true;
+      }
+      if (pruned) localStorage.setItem("shells", JSON.stringify(this.shells));
+      this.tabsSeen = tabsNow;
     }
     const shell = tabId && live.has(this.shells[tabId]) ? this.shells[tabId] : null;
     const shellShown = Boolean(shell && tabPanes.some(p => p.terminal === shell));
@@ -103,8 +123,9 @@ export default class Tabs extends View {
       if (shellShown) run("terminal.park", { terminal: shell });
       else showShell(false);
     };
-    // Open by default: a tab with only its chat gets the shell once; hidden or closed later, it stays that way.
-    if (tabId && !this.placing && !shell && !this.autoDone.has(tabId) && tabPanes.length === 1 && tabPanes[0].terminal) {
+    // Open by default: a tab with only an agent's chat gets the shell once; hidden or closed later, it stays that way.
+    // (A plain Terminal tab is already a shell.)
+    if (tabId && !this.placing && !shell && !this.autoDone.has(tabId) && tabPanes.length === 1 && tabPanes[0].terminal && tabPanes[0].program?.agent) {
       this.autoDone.add(tabId);
       localStorage.setItem("autoShell", JSON.stringify([...this.autoDone].slice(-500)));
       showShell(true);
