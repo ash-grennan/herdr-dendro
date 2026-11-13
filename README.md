@@ -5,7 +5,9 @@ A [Herdr](https://herdr.dev) layout based on the default one, with **Changes** a
 - `layouts/dendro.json`: the layout
 - `mods/dendro-diff-panel/`: Changes panel; click a file to swap the panel to its git diff (Esc / ‹ back, ↑↓ or j/k between files)
 - `mods/dendro-files-panel/`: Files panel with icons and folder colours
-- `mods/dendro-tab-bar/`: tab bar whose Files / Changes buttons toggle each half
+- `mods/dendro-tab-bar/`: tab bar with the Chat | Editor switch and the Terminal / Files / Changes buttons
+- `mods/dendro-editor/`: the Editor view: files opened from Files, as tabs
+- `mods/dendro-agents-panel/`: Agents list grouped into colour-coded folder boxes (the agent's git repo, else its folder)
 
 Install: `./install.sh`, then pick **dendro** with `ctrl-shift-l`.
 
@@ -15,7 +17,7 @@ MIT, see `LICENSE`. This covers the layout, the mods' code and the original SVGs
 
 ### Third-party assets
 
-- **[vscode-icons](https://github.com/vscode-icons/vscode-icons)**, MIT, notice in `mods/dendro-files-panel/icons/LICENSE-vscode-icons.txt`. Covers everything in `mods/dendro-files-panel/icons/`, plus `folder.svg` and `folder-open.svg` in that mod (recoloured copies of its default folder icons).
-- **[Lucide](https://lucide.dev)**, ISC (some icons MIT via Feather), notice in `LICENSE-lucide.txt` inside each mod that uses them: `chevron-*.svg`, `x.svg`, `terminal.svg`.
+- **[vscode-icons](https://github.com/vscode-icons/vscode-icons)**, MIT, notice in `mods/dendro-files-panel/icons/LICENSE-vscode-icons.txt`. Covers everything in `mods/dendro-files-panel/icons/`, plus `folder.svg` and `folder-open.svg` in that mod and in `mods/dendro-agents-panel/` (recoloured copies of its default folder icons; notice copied there too).
+- **[Lucide](https://lucide.dev)**, ISC (some icons MIT via Feather), notice in `LICENSE-lucide.txt` inside each mod that uses them: `chevron-*.svg`, `x.svg`, `terminal.svg`, `sort-folder.svg`.
 
 Product and language logos among the file icons are trademarks of their owners and are used only to label file types.
