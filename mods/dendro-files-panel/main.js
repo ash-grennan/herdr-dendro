@@ -1,7 +1,7 @@
 // Files with vscode-icons and per-folder colours. Based on Herdr's shipped `files` mod.
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { spaces, panes, focused, exec, watchFolder, theme, window, shared, setShared, run } from "herdr";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { spaces, panes, focused, exec, watchFolder, theme, window, shared, setShared, run, openOverlay, nextCommand, writeTextFile } from "herdr";
 import { fileIcon, folderIcon, plainFolder } from "./icons.js";
 
 const INDENT = 16;
@@ -50,12 +50,107 @@ async function directory(path, on) {
   return out;
 }
 
+// Makes one new folder (no -p: an existing one is an error, and parents must exist).
+async function makeFolder(path, on) {
+  const windows = () => exec("powershell", ["-NoProfile", "-Command", "& { param($p) New-Item -ItemType Directory -LiteralPath $p -ErrorAction Stop | Out-Null } '" + path.replace(/['‘’‚‛]/g, "$&$&") + "'"], { on });
+  let r;
+  if (!on && window()?.platform === "windows") r = await windows();
+  else {
+    try { r = await exec("mkdir", ["--", path], { on }); }
+    catch (e) {
+      if (!(on && String(e).includes("program not found"))) throw e;
+      r = await windows();
+    }
+  }
+  if (r.code !== 0) throw new Error(r.stderr.trim() || "Couldn't create the folder");
+}
+
 export default class Files extends View {
   init(_props, cx) {
     this.saved = new Map();
     this.entries = new Map(); this.folders = new Set(); this.pending = new Set(); this.marks = {};
     this.refresh(cx);
     cx.timer.every(10000, cx => this.refresh(cx));
+    // New File / New Folder: a name field in the tree, in the folder that was right-clicked.
+    this.input = InputState.new({ placeholder: "Name" });
+    this.input.on("change", (_e, cx) => { if (this.creating) { this.creating.error = null; cx.notify(); } });
+    this.input.on("submit", (_e, cx) => this.create(cx));
+    // Closing the menu can move the keyboard away at first; only a later blur on an empty name cancels.
+    this.input.on("blur", (_e, cx) => { if (this.creating && Date.now() - this.creating.since > 800 && !this.input.value().trim()) this.cancelCreate(cx); });
+    cx.spawn(async cx => {
+      for (;;) {
+        const c = await nextCommand();
+        if (c === "new-file") this.startCreate(cx, "file");
+        else if (c === "new-folder") this.startCreate(cx, "folder");
+        cx.notify();
+      }
+    });
+  }
+
+  // Right-click: a folder row targets that folder, a file row its folder, empty space the root.
+  openMenu(dir) {
+    this.menuDir = dir;
+    this.menuContext = this.context;
+    openOverlay({ mod: "dendro-files-menu", kind: "popup", at: "pointer", width: 180, height: 72 });
+  }
+
+  startCreate(cx, kind) {
+    if (this.menuContext !== this.context || !this.root) return;
+    const dir = this.menuDir ?? "";
+    if (dir && !this.folders.has(dir)) this.toggle(dir, cx);
+    this.creating = { kind, dir, since: Date.now(), error: null, busy: false };
+    this.input.set_value("");
+    this.input.focus();
+    cx.timer.after(150, () => this.input.focus());
+  }
+
+  cancelCreate(cx) {
+    this.creating = null;
+    cx.notify();
+  }
+
+  create(cx) {
+    const creating = this.creating, context = this.context;
+    if (!creating || creating.busy) return;
+    const name = this.input.value().trim();
+    if (!name) return this.cancelCreate(cx);
+    const problem = /[\\/]/.test(name) ? "Name can't contain / or \\"
+      : name === "." || name === ".." ? "Not a valid name"
+      : (this.entries.get(creating.dir) ?? []).some(e => e.name === name) ? `${name} already exists here`
+      : null;
+    if (problem) { creating.error = problem; cx.notify(); return; }
+    const path = creating.dir ? `${creating.dir}/${name}` : name, full = `${this.root}/${path}`;
+    creating.busy = true;
+    cx.spawn(async cx => {
+      try {
+        if (creating.kind === "folder") await makeFolder(full, this.on);
+        else if (this.on) {
+          // noclobber: never truncate a file that appeared since the folder was listed.
+          const r = await exec("sh", ["-c", 'set -C; : > "$1"', "new-file", full], { on: this.on });
+          if (r.code !== 0) throw new Error(r.stderr.trim() || "Couldn't create the file");
+        } else await writeTextFile(full, "", null);
+        if (this.creating === creating) this.creating = null;
+        if (!this.current(context)) return;
+        await this.loadFolder(creating.dir, context).catch(() => {});
+        if (creating.kind === "folder") { if (!this.folders.has(path)) this.toggle(path, cx); } // open it, ready for its first file
+        else this.show(path, cx);
+        this.refresh(cx); // git marks
+      } catch (e) {
+        creating.busy = false;
+        if (this.creating === creating) creating.error = String(e?.message ?? e);
+      } finally { cx.notify(); }
+    });
+  }
+
+  newFileRow(depth, t) {
+    const c = this.creating, typed = this.input.value().trim();
+    return v_flex().id("files-new").flex_none()
+      .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.cancelCreate(cx); } })
+      .child(h_flex().h(26).pl(8 + depth * INDENT).pr(8).gap(6).items_center()
+        .child(div().w(12).flex_none())
+        .child(c.kind === "folder" ? svg(plainFolder(false)).size(16).flex_none().text_color(folderColor(typed, t)) : image(fileIcon(typed || "untitled")).size(16).flex_none())
+        .child(Input.new(this.input).flex_1().min_w(0).h(22).px(6).rounded(5).border_1().border_color(c.error ? t.ansi1 : t.accent).bg(t.background).text_size(13).text_color(t.foreground)))
+      .when(Boolean(c.error), el => el.child(div().pl(8 + depth * INDENT + 36).pr(8).pb(4).text_size(11.5).text_color(t.ansi1).child(c.error)));
   }
 
   watch(root, cx) {
@@ -88,7 +183,7 @@ export default class Files extends View {
       const saved = this.saved.get(next);
       this.context = { key: next, cwd, on }; this.root = cwd; this.on = on; this.entries = new Map(); this.folders = new Set(saved?.folders);
       this.pending = new Set(); this.marks = {}; this.watched = null; this.error = null; this.limited = false;
-      this.loading = false;
+      this.loading = false; this.creating = null;
     }
     if (!cwd || this.loading) return;
     const context = this.context;
@@ -149,6 +244,7 @@ export default class Files extends View {
   // guides: the colour of each open ancestor folder, drawn as a thin line down its children.
   rows(prefix, depth, out, t, guides = []) {
     if (out.length >= TOTAL || depth > 40) return out;
+    if (this.creating?.dir === prefix) out.push(this.newFileRow(depth, t));
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
@@ -159,6 +255,7 @@ export default class Files extends View {
       const editing = !entry.dir && this.opened === `${this.root}/${path}`;
       out.push(h_flex().id(`file-${path}`).relative().when(editing, el => el.bg(t.selected)).h(26).flex_none().pl(8 + depth * INDENT).pr(8).gap(6).items_center().rounded(6).cursor_pointer().hover(s => s.bg(t.hover))
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(entry.dir ? path : prefix); })
         .children(guides.map((c, i) => div().absolute().top(0).bottom(0).left(8 + i * INDENT + 5.5).w(1).bg(alpha(c, "66"))))
         .child(entry.dir ? svg(`mods/dendro-files-panel/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(open ? color : t.dim) : div().w(12).flex_none())
         .child(icon)
@@ -178,7 +275,9 @@ export default class Files extends View {
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Files"))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.root?.split(/[\\/]/).pop() ?? "")))
-      .child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
+      .child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6)
+        .on_mouse_down("right", (_e, cx) => { if (this.root) this.openMenu(""); })
+        .children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total"))));
   }
