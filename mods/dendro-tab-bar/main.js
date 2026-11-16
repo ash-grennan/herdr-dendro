@@ -152,7 +152,7 @@ export default class Tabs extends View {
         }).child(svg(icon).size(14)).child(label);
     };
     // Chat | Editor: which view the main area shows (the "center" stack).
-    const center = find(root, "center"), view = center?.active ?? "main", dirty = Number(shared("dendro.editor.dirty") ?? 0);
+    const center = find(root, "center"), view = center?.active ?? "main", dirtyBy = shared("dendro.editor.dirty"), dirty = Number((dirtyBy && typeof dirtyBy === "object" ? dirtyBy[space?.id] : 0) ?? 0);
     const segment = (child, label) => {
       const on = view === child;
       return h_flex().id(`view-${child}`).h(24).px(10).gap(6).items_center().rounded(5).text_size(12)

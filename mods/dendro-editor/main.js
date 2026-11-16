@@ -3,7 +3,7 @@
 // Built on Herdr's own Editor (syntax highlighting, line numbers, folding).
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
-import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home } from "herdr";
+import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home, spaces } from "herdr";
 import { fileIcon } from "./icons.js";
 
 // The Editor's language names, where they differ from the file extension.
@@ -17,31 +17,39 @@ const languageOf = (path) => {
 const isMarkdown = (path) => /\.(md|markdown|mdx)$/i.test(path);
 const isProse = (path) => isMarkdown(path) || /\.(txt|text|rst|adoc)$/i.test(path);
 const OPEN = "dendro.open", DIRTY = "dendro.editor.dirty";
+// Open files belong to the space they were opened in: each space has its own tabs.
+const spaceNow = () => spaces().find((s) => s.active)?.id ?? "";
 const showCenter = (child) => run("layout.select", { stack: "center", child });
 
 export default class DendroEditor extends View {
   init(_props, cx) {
-    this.docs = [];          // { path, on, name, saved, state, dirty, error, conflict, discard }
-    this.active = null;
+    this.docs = [];          // { space, path, on, name, saved, state, dirty, error, conflict, discard }
+    this.activeBy = {};      // space id -> the path its editor shows
     this.seen = undefined;   // the last open request handled
     this.handle = cx.focus_handle();
-    if (shared(DIRTY)) setShared(DIRTY, 0); // left over from a run that ended with unsaved edits
+    if (shared(DIRTY)) setShared(DIRTY, null); // left over from a run that ended with unsaved edits
     cx.timer.every(2000, (cx) => this.poll(cx));
   }
 
   // Layout switched or app quitting: nothing is open any more.
-  async close() { setShared(DIRTY, 0); }
+  async close() { setShared(DIRTY, null); }
 
-  doc(path = this.active) { return this.docs.find((d) => d.path === path) ?? null; }
+  get active() { return this.activeBy[spaceNow()] ?? null; }
+  set active(path) { this.activeBy[spaceNow()] = path; }
+
+  // The shown space's files, and one of them (default: the one on screen).
+  shown() { const space = spaceNow(); return this.docs.filter((d) => d.space === space); }
+  doc(path = this.active) { return this.shown().find((d) => d.path === path) ?? null; }
 
   open(request, cx) {
-    let d = this.doc(request.path);
+    const space = request.space;
+    let d = this.docs.find((x) => x.space === space && x.path === request.path);
     if (!d) {
-      d = { path: request.path, on: request.on ?? null, name: request.path.split(/[\\/]/).pop(), state: null, dirty: false, preview: isMarkdown(request.path) };
+      d = { space, path: request.path, on: request.on ?? null, name: request.path.split(/[\\/]/).pop(), state: null, dirty: false, preview: isMarkdown(request.path) };
       this.docs.push(d);
       this.load(d, cx);
     }
-    this.active = d.path; // called while rendering: no cx.notify() here (load() redraws when the text arrives)
+    this.activeBy[space] = d.path; // called while rendering: no cx.notify() here (load() redraws when the text arrives)
   }
 
   load(d, cx) {
@@ -72,8 +80,10 @@ export default class DendroEditor extends View {
   }
 
   publishDirty() {
-    const n = this.docs.filter((d) => d.dirty).length;
-    if ((shared(DIRTY) ?? 0) !== n) setShared(DIRTY, n);
+    // Unsaved files per space, for the dot on that space's Editor switch.
+    const by = {};
+    for (const d of this.docs) if (d.dirty) by[d.space] = (by[d.space] ?? 0) + 1;
+    if (JSON.stringify(shared(DIRTY) ?? {}) !== JSON.stringify(by)) setShared(DIRTY, by);
   }
 
   // Follow the file on disk while it's open: reload it when untouched, flag it when edited here too.
@@ -131,17 +141,21 @@ export default class DendroEditor extends View {
     if (!d) return;
     if (d.dirty && !d.discard) { d.discard = true; this.active = path; cx.notify(); return; }
     d.state?.release();
-    const i = this.docs.indexOf(d);
-    this.docs.splice(i, 1);
-    if (this.active === path) this.active = this.docs[Math.min(i, this.docs.length - 1)]?.path ?? null;
-    if (!this.docs.length) { setShared(OPEN, null); showCenter("main"); }
+    const i = this.shown().indexOf(d);
+    this.docs.splice(this.docs.indexOf(d), 1);
+    const left = this.shown();
+    if (this.active === path) this.active = left[Math.min(i, left.length - 1)]?.path ?? null;
+    // Forget the request that opened it, or a reload of this mod would open it again.
+    const request = shared(OPEN);
+    if (request?.path === path && request.space === d.space) setShared(OPEN, null);
+    if (!left.length) showCenter("main");
     this.publishDirty();
     cx.notify();
   }
 
   render(cx) {
     const request = shared(OPEN);
-    if (request?.at && request.at !== this.seen) { this.seen = request.at; this.open(request, cx); }
+    if (request?.at && request.at !== this.seen) { this.seen = request.at; if (request.space) this.open(request, cx); }
     const t = theme(), d = this.doc(), h = home();
     const pretty = (p) => h && p.startsWith(h + "/") ? "~" + p.slice(h.length) : p;
     const stop = (_e, cx) => cx.stop_propagation();
@@ -179,7 +193,7 @@ export default class DendroEditor extends View {
         else if (mod && e.key === "w" && this.active) { cx.stop_propagation(); this.closeDoc(this.active, cx); }
       })
       .child(h_flex().id("dendro-editor-tabs").h(40).flex_none().px(6).gap(4).items_center().bg(t.chrome).border_b(1).border_color(t.border).overflow_x_scrollbar()
-        .children(this.docs.map(tab)))
+        .children(this.shown().map(tab)))
       .when(Boolean(d), (el) => el.child(h_flex().h(30).flex_none().px(12).gap(8).items_center().border_b(1).border_color(t.border).text_size(11.5)
         .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(pretty(d.path)))
         .when(Boolean(d.on), (e) => e.child(div().text_color(t.muted).child(`read-only · ${d.on}`)))

@@ -141,7 +141,8 @@ export default class Files extends View {
   // Files open in the editor in the main area (the dendro-editor mod), not in this panel.
   show(path, cx) {
     if (!path || !cx) return;
-    setShared("dendro.open", { path: `${this.root}/${path}`, on: this.on ?? null, at: Date.now() });
+    // The editor keeps each space's open files apart, so say which space this is for.
+    setShared("dendro.open", { path: `${this.root}/${path}`, on: this.on ?? null, space: spaces().find(s => s.active)?.id ?? "", at: Date.now() });
     run("layout.select", { stack: "center", child: "editor" });
   }
 
@@ -171,7 +172,8 @@ export default class Files extends View {
   render(cx) {
     if (key() !== this.context?.key) this.refresh(cx);
     const t = theme();
-    this.opened = shared("dendro.open")?.path ?? null; // the file the editor shows, for the row highlight
+    const request = shared("dendro.open"); // the file the editor last opened in this space, for the row highlight
+    this.opened = request && request.space === spaces().find(s => s.active)?.id ? request.path : null;
     return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Files"))
