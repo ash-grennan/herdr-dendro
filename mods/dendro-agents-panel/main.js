@@ -101,6 +101,8 @@ async function checkout(folder, on) {
 // directly inside one is listed under it, so you can open a space or start an agent there.
 const ROOTS = "dendro.projects.roots", RESCAN = "dendro.projects.rescan";
 const projectRoots = () => (Array.isArray(shared(ROOTS)) ? shared(ROOTS) : []).filter((r) => typeof r === "string");
+// What the switcher popup lists (dendro-switcher), and how many sessions it shows per folder.
+const SWITCH = "dendro.switcher", SWITCH_SESSIONS = 3;
 const PROJECTS_SHOWN = 8;       // per folder, most recently committed first, until "more"
 const within = (p, dir) => Boolean(p) && (p === dir || p.startsWith(dir + "/"));
 // The repos in a folder (this machine): [{ path, name, at }], at: the last commit (seconds), 0 for none.
@@ -559,10 +561,11 @@ export default class Agents extends View {
     const folderOf = new Map(list.map((a) => [a.address, this.folderOf(a, cwdOf.get(a.pane) || termCwd.get(a.address) || spaceFolder.get(a.space), cx)]));
     // Projects' repos (cached; looked up again now and then) share the colours: boxes pick first.
     const boxFolders = [...new Set(folderOf.values())].sort(), boxed = new Set(boxFolders);
+    // Looked up on the narrow rail too, where they aren't drawn: the switcher lists them all the same.
     // Asked to look again: what was found stays on show until the new list is in.
     const rescan = shared(RESCAN);
     if (rescan !== this.rescan) { this.rescan = rescan; for (const got of this.projects.values()) got.at = 0; }
-    const projectLists = (collapsed ? [] : projectRoots()).map((root) => {
+    const projectLists = projectRoots().map((root) => {
       const got = this.projectsFor(root, cx);
       return { root, got, all: (got?.list ?? []).filter((p) => !boxed.has(p.path)) };
     });
@@ -632,6 +635,29 @@ export default class Agents extends View {
     for (const a of list) { const k = `${a.space_name}\u0000${detail.get(a.address) ?? ""}`; seen[k] = (seen[k] ?? 0) + 1; }
     for (const a of list) {
       if (detail.get(a.address) == null && seen[`${a.space_name}\u0000`] > 1) detail.set(a.address, label(a));
+    }
+
+    // For the switcher (dendro-switcher): each folder with its latest sessions, then the projects,
+    // named and coloured as here. Shared only when it changes.
+    const sessionName = (a) => detail.get(a.address) ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
+    const inFolder = new Map();
+    for (const a of list) {
+      const f = folderOf.get(a.address);
+      if (!inFolder.has(f)) inFolder.set(f, []);
+      inFolder.get(f).push(a);
+    }
+    const switcher = {
+      folders: [...inFolder].map(([path, as]) => {
+        const latest = [...as].sort((x, y) => this.since(y) - this.since(x));
+        return { path, name: base(path), color: colorKey.get(path) ?? null, count: as.length, at: this.since(latest[0]),
+          sessions: latest.slice(0, SWITCH_SESSIONS).map((a) => ({ pane: a.pane, label: sessionName(a), status: a.status, at: this.since(a), focused: Boolean(a.focused), icon: a.program?.icon ?? null, tint: Boolean(a.program?.tint), space: a.space_name ?? "" })) };
+      }),
+      projects: projectLists.flatMap((l) => l.all).map((p) => ({ path: p.path, name: p.name, color: colorKey.get(p.path) ?? null, at: p.at * 1000 })),
+    };
+    const switchSent = JSON.stringify(switcher);
+    if (switchSent !== this.switchSent) {
+      this.switchSent = switchSent;
+      cx.timer.after(0, () => setShared(SWITCH, switcher));
     }
 
     const row = (a, i, subs = []) => {
@@ -812,7 +838,7 @@ export default class Agents extends View {
         .when(Boolean(sp), (el) => el.child(div().size(5).rounded(3).flex_none().bg(color)))
         .when(p.at > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - p.at * 1000))));
     };
-    const projectSections = projectLists.flatMap(({ root, got, all }) => {
+    const projectSections = (collapsed ? [] : projectLists).flatMap(({ root, got, all }) => {
       const key = `proj-${root}`, open = !this.folded.has(key), more = this.moreShown.has(root);
       const onShow = open ? (more ? all : all.slice(0, PROJECTS_SHOWN)) : [];
       listed.push(...onShow.map((p) => p.path));
@@ -862,6 +888,10 @@ export default class Agents extends View {
             .justify_between()
             .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
             .child(h_flex().gap(12).items_center()
+              .child(div().id("ag-switch").text_color(t.dim).hover((s) => s.text_color(t.foreground))
+                .on_click(() => run("mod.open", { name: "dendro-switcher" }))
+                .tooltip(`Go to a folder or session (${window()?.platform === "macos" ? "\u2318O" : "Alt+O"})`)
+                .child(svg("mods/workspace-chrome/search.svg").size(14)))
               .child(div().id("ag-projects").text_color(t.dim).hover((s) => s.text_color(t.foreground))
                 .on_click((_e, cx) => this.addRoot(cx))
                 .tooltip("Add a folder of projects (the git repos in it)")

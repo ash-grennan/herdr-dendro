@@ -9,6 +9,8 @@ mkdir -p "$HOME_DIR/layouts" "$HOME_DIR/mods"
 for m in dendro-diff-panel dendro-editor dendro-quick-open; do
   { echo "// Copy of mods/dendro-files-panel/icons.js (synced by install.sh; edit that one)."; grep -v '^// Copy of' "$here/mods/dendro-files-panel/icons.js"; } > "$here/mods/$m/icons.js"
 done
+# fuzzy.js (quick-open matching) lives in dendro-quick-open; the switcher carries a copy.
+{ echo "// Copy of mods/dendro-quick-open/fuzzy.js (synced by install.sh; edit that one)."; grep -v '^// Copy of' "$here/mods/dendro-quick-open/fuzzy.js"; } > "$here/mods/dendro-switcher/fuzzy.js"
 for m in "$here"/mods/*/; do
   name="$(basename "$m")"
   [ -L "$HOME_DIR/mods/$name" ] && rm "$HOME_DIR/mods/$name"
