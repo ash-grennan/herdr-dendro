@@ -3,7 +3,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, home } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, home, knownAgents } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -91,6 +91,7 @@ function icon(p, size, color) {
 export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
+    if (props()?.rowMenu) return this.initRowMenu(cx);
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
@@ -227,6 +228,56 @@ export default class Agents extends View {
         .when(s.id === on, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(14).flex_none().text_color(t.foreground)))));
   }
 
+  // Right-click on an agent: a popup (this mod again, with props.rowMenu) offering another
+  // session of the same agent, in the same folder, as a new tab in that agent's space.
+  openRowMenu(a, cwd) {
+    const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
+    const p = a.program ?? {};
+    // Not one of the agents Herdr can start from a menu: the command that is running in its terminal.
+    const typed = terminals().find((x) => x.address === a.address)?.foreground?.argv?.[0];
+    openOverlay({ mod: "dendro-agents-panel", kind: "popup", at: "pointer", width: 250, height: 41,
+      props: { rowMenu: { space: a.space, folder: cwd ?? null, machine, key: p.key ?? null, name: p.name || a.app || "agent", icon: p.icon ?? null, tint: Boolean(p.tint), typed: typed ? [typed] : null } } });
+  }
+
+  // How to start that agent: Herdr's own command for it (the list its + menu uses), else what was typed.
+  initRowMenu(cx) {
+    const m = props().rowMenu, where = m.machine ?? "";
+    const known = (list) => list?.find((x) => x.key === m.key && x.run?.length);
+    const cached = known(shared("new-menu.agents")?.[where]);
+    this.argv = cached?.run ?? m.typed;
+    this.handle = cx.focus_handle();
+    this.handle.focus();
+    cx.spawn(async (cx) => {
+      const found = known(await knownAgents({ on: m.machine }).catch(() => null));
+      if (found) this.argv = found.run;
+      this.checked = true;
+      cx.notify();
+    });
+  }
+
+  startAgain() {
+    const m = props().rowMenu;
+    if (!this.argv?.length) return;
+    closeOverlay(props().overlay);
+    run("tab.new", { name: m.name, space: m.space, ...(m.folder ? { folder: m.folder } : {}), argv: this.argv });
+    if (!spaces().find((s) => s.id === m.space)?.active) run("space.select", { id: m.space });
+  }
+
+  rowMenu(t) {
+    const m = props().rowMenu, can = Boolean(this.argv?.length);
+    const pic = icon(m, 14, can ? t.foreground : t.dim) ?? svg("mods/workspace-chrome/plus.svg").size(14).flex_none().text_color(t.muted);
+    return v_flex().id("agent-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
+      .on_key_down((e) => {
+        if (e.key === "enter") this.startAgain();
+        else if (e.key === "escape") closeOverlay(props().overlay);
+      })
+      .child(h_flex().id("agent-menu-new").h(31).px(8).gap(9).rounded(7).items_center()
+        .text_color(can ? t.foreground : t.dim).when(can, (el) => el.bg(t.selected).cursor_pointer())
+        .on_click(() => this.startAgain())
+        .child(pic)
+        .child(div().flex_1().min_w(0).truncate().child(can || !this.checked ? `New ${m.name} session` : `Can't start ${m.name} from here`)));
+  }
+
   peek(addr) {
     run("terminal.peek", { terminal: addr });
   }
@@ -283,6 +334,7 @@ export default class Agents extends View {
   render(cx) {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
+    if (props()?.rowMenu) return this.rowMenu(t);
     const collapsed = narrow();
     const sort = sortOf();
     let list = agents();
@@ -425,6 +477,7 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => run("pane.focus", { pane: a.pane }))
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openRowMenu(a, cwdOf.get(a.pane) || termCwd.get(a.address)); })
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
