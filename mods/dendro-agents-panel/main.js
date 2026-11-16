@@ -98,6 +98,9 @@ export default class Agents extends View {
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     this.roots = new Map();   // "machine\0cwd" -> repo root (or the cwd itself)
+    // Spaces this panel named after their agent's folder: space id -> the name it gave.
+    try { this.spaceNames = JSON.parse(localStorage.getItem("spaceNames") ?? "{}"); } catch { this.spaceNames = {}; }
+    this.naming = {};         // space id -> { name, at }: the rename last asked for
     this.asking = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
   }
@@ -154,6 +157,40 @@ export default class Agents extends View {
       });
     }
     return cwd;
+  }
+
+  // Herdr calls an unnamed space after its first terminal's folder: here that is often the shell
+  // above the chat, or wherever you happened to be when you made the space. Once a space has an
+  // agent, call it after that agent's folder instead (the first agent's: space, tab, pane order).
+  // A space you named yourself is left alone.
+  nameSpaces(list, all, cx) {
+    const all_spaces = spaces();
+    if (!all_spaces.length) return;
+    const cwdOf = new Map(panes().map((p) => [p.pane, p.cwd])), termCwd = new Map(all.map((x) => [x.address, x.cwd]));
+    const now = Date.now();
+    let changed = false;
+    for (const sp of all_spaces) {
+      const mine = this.spaceNames[sp.id];
+      if (sp.named && sp.name !== mine) {   // you renamed it: yours now
+        if (mine !== undefined) { delete this.spaceNames[sp.id]; changed = true; }
+        continue;
+      }
+      const a = list.find((x) => x.space === sp.id);
+      const cwd = a && (cwdOf.get(a.pane) || termCwd.get(a.address));
+      if (!cwd) continue;
+      const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
+      const root = this.roots.get(`${machine ?? ""}\0${cwd}`);
+      if (root === undefined) { this.folderOf(a, cwd, cx); continue; }   // repo lookup under way; it redraws
+      const name = !machine && root === home() ? "~" : base(root);
+      if (!name || name === sp.name) continue;
+      const asked = this.naming[sp.id];
+      if (asked?.name === name && now - asked.at < 10000) continue;      // already asked; give it a moment
+      this.naming[sp.id] = { name, at: now };
+      this.spaceNames[sp.id] = name; changed = true;
+      run("space.rename", { id: sp.id, name });
+    }
+    for (const id of Object.keys(this.spaceNames)) if (!all_spaces.some((sp) => sp.id === id)) { delete this.spaceNames[id]; changed = true; }
+    if (changed) localStorage.setItem("spaceNames", JSON.stringify(this.spaceNames));
   }
 
   since(a) {
@@ -255,6 +292,7 @@ export default class Agents extends View {
     const shown = focused()?.agent;
     const now = Date.now();
     this.track(list, now);
+    this.nameSpaces(list, all, cx);
     // A kept sub-agent (one with a pane) is in agents() too: where a tree shows
     // it, it gets no row of its own, unless it's pinned.
     const nested = new Set(collapsed ? [] : list.flatMap((a) => this.tree(all, a.address).map((s) => s.t.address)));
