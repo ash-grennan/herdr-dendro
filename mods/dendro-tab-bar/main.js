@@ -3,6 +3,18 @@ import { h_flex, ScrollHandle } from "gpui-base";
 import { spaces, panes, terminals, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
 // The Terminal button's shell: one per tab, pinned above the chat, hidden (parked) rather than closed.
 const SHELL_SHARE = 0.1; // of the tab's height
+// ...but never so little that the shell has under 3 rows: zsh then draws its prompt in a one-line
+// mode that shows ? for the glyphs in it (➜, ✗, any theme's icons), in any terminal. SHELL_ROWS is
+// what it gets instead; CHROME_ROWS is roughly a pane's header and padding, counted in rows.
+const SHELL_ROWS = 4, CHROME_ROWS = 3;
+function shellShare(shellRows, chatRows) {
+  if (!(shellRows >= 0 && chatRows > 0)) return SHELL_SHARE;
+  return Math.min(0.5, Math.max(SHELL_SHARE, (SHELL_ROWS + CHROME_ROWS) / (shellRows + chatRows + 2 * CHROME_ROWS)));
+}
+function sizeShell(shell, chat, share) {
+  run("layout.resize", { id: shell.pane, weight: 2 * share });
+  run("layout.resize", { id: chat.pane, weight: 2 * (1 - share) });
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -31,8 +43,12 @@ const short = (s) => { const chars = [...s]; return chars.length > TAB_CHARS ? c
 const alpha = (c, a) => /^#[0-9a-f]{6}$/i.test(c) ? c + a : c;
 
 export default class Tabs extends View {
-  init() {
+  init(_props, cx) {
     this.pressed = null;
+    this.grown = {};   // tab id -> { at, rows, chat }: when its shell was last given its rows back, and from what
+    // A window made shorter doesn't redraw this bar by itself. Only while a shell is on show:
+    // every redraw of a mod redraws the whole window.
+    cx.timer.every(3000, (cx) => { if (this.shellUp) cx.notify(); });
     this.scroll = ScrollHandle.new();
     try { this.shells = JSON.parse(localStorage.getItem("shells") ?? "{}"); } catch { this.shells = {}; }
     try { this.autoDone = new Set(JSON.parse(localStorage.getItem("autoShell") ?? "[]")); } catch { this.autoDone = new Set(); }
@@ -92,7 +108,9 @@ export default class Tabs extends View {
     const isOn = id => Boolean(panel && !panel.hidden && !find(root, id)?.hidden);
     // This tab's shell: remembered by address once it has shown up in a pane of the tab.
     const tabId = shown[active]?.id, tabPanes = panes().filter(p => p.tab === tabId);
-    const live = new Set(terminals().filter(x => x.state !== "finished").map(x => x.address));
+    const allTerminals = terminals();
+    const live = new Set(allTerminals.filter(x => x.state !== "finished").map(x => x.address));
+    const rowsOf = (address) => allTerminals.find(x => x.address === address)?.rows;
     // Opening or bringing back the shell: run() returns nothing, so watch for its pane to appear,
     // then pin it above the chat at SHELL_SHARE of the height.
     // Followed in the tab it was asked for (not just the shown one), and dropped when it times out.
@@ -107,10 +125,7 @@ export default class Tabs extends View {
         const chat = tabPanes.find(p => p.pane === placing.chat);
         if (chat) {
           if (tabPanes.indexOf(pane) > tabPanes.indexOf(chat)) run("pane.swap", { pane: pane.pane, target: chat.pane });
-          if (tabPanes.length === 2) {
-            run("layout.resize", { id: pane.pane, weight: 2 * SHELL_SHARE });
-            run("layout.resize", { id: chat.pane, weight: 2 * (1 - SHELL_SHARE) });
-          }
+          if (tabPanes.length === 2) sizeShell(pane, chat, shellShare(rowsOf(pane.terminal), rowsOf(chat.terminal)));
           if (placing.refocus) run("pane.focus", { pane: chat.pane });
         }
       }
@@ -126,11 +141,28 @@ export default class Tabs extends View {
         if (live.has(gone) && !panes().some(p => p.terminal === gone)) run("terminal.kill", { terminal: gone });
         delete this.shells[id]; pruned = true;
       }
+      // Once a run: tabs that went while Herdr wasn't running, whose shells have gone too.
+      if (!this.prunedStale) {
+        this.prunedStale = true;
+        for (const id of Object.keys(this.shells)) if (!tabsNow.has(id) && !live.has(this.shells[id])) { delete this.shells[id]; pruned = true; }
+      }
       if (pruned) localStorage.setItem("shells", JSON.stringify(this.shells));
       this.tabsSeen = tabsNow;
     }
     const shell = tabId && live.has(this.shells[tabId]) ? this.shells[tabId] : null;
     const shellShown = Boolean(shell && tabPanes.some(p => p.terminal === shell));
+    this.shellUp = shellShown;
+    // Squeezed under 3 rows since (a shorter window, a dragged divider): it gets its rows back.
+    if (shellShown && !this.placing && tabPanes.length === 2) {
+      const pane = tabPanes.find(p => p.terminal === shell), chat = tabPanes.find(p => p.terminal !== shell);
+      const rows = rowsOf(shell), chatRows = rowsOf(chat?.terminal), last = this.grown[tabId];
+      if (rows >= 3) delete this.grown[tabId];
+      // Not again while nothing has moved since the last try: a window too short for 3 rows even at half.
+      else if (chat?.terminal && rows < 3 && !(last && last.rows === rows && last.chat === chatRows) && Date.now() - (last?.at ?? 0) > 3000) {
+        this.grown[tabId] = { at: Date.now(), rows, chat: chatRows };
+        sizeShell(pane, chat, shellShare(rows, chatRows));
+      }
+    }
     const showShell = (refocus) => {
       // Split from the tab's first pane (the chat), not whichever pane has focus.
       const chat = tabPanes.find(p => p.terminal && p.terminal !== shell);
