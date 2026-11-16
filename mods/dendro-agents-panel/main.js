@@ -5,7 +5,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, home, knownAgents } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, home, knownAgents, pickFolder, checking } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -97,6 +97,26 @@ async function checkout(folder, on) {
   if (!dir || !common) return null;
   return dir === common ? "main" : "linked";
 }
+// Projects: folders added with the header's button (shared, so they're kept); each git repo
+// directly inside one is listed under it, so you can open a space or start an agent there.
+const ROOTS = "dendro.projects.roots", RESCAN = "dendro.projects.rescan";
+const projectRoots = () => (Array.isArray(shared(ROOTS)) ? shared(ROOTS) : []).filter((r) => typeof r === "string");
+const PROJECTS_SHOWN = 8;       // per folder, most recently committed first, until "more"
+const within = (p, dir) => Boolean(p) && (p === dir || p.startsWith(dir + "/"));
+// The repos in a folder (this machine): [{ path, name, at }], at: the last commit (seconds), 0 for none.
+async function scanRoot(root) {
+  const script = 'for d in "$1"/*/; do [ -e "$d.git" ] || continue; p=$(cd "$d" && pwd -P) || continue; '
+    + 't=$(git -C "$p" log -1 --format=%ct 2>/dev/null); printf "%s\\t%s\\n" "${t:-0}" "$p"; done';
+  const r = await exec("sh", ["-c", script, "projects", root]);
+  const seen = new Set(), out = [];
+  for (const line of r.stdout.split("\n")) {
+    const tab = line.indexOf("\t"), path = line.slice(tab + 1);
+    if (tab < 0 || !path || seen.has(path)) continue;   // a link to a repo also listed: once
+    seen.add(path);
+    out.push({ path, name: base(path), at: Number(line.slice(0, tab)) || 0 });
+  }
+  return out.sort((a, b) => b.at - a.at || a.name.localeCompare(b.name));
+}
 const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
 const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
 
@@ -132,6 +152,9 @@ export default class Agents extends View {
     // Folder -> the colour it was given (a theme key), kept so a folder stays the colour you know.
     try { this.colors = JSON.parse(localStorage.getItem("folderColors") ?? "{}"); } catch { this.colors = {}; }
     this.asking = new Set();
+    this.projects = new Map();     // root -> { list, at, error }: its repos, looked up every few minutes
+    this.scanning = new Set();
+    this.moreShown = new Set();    // roots showing all their projects, not the first few
     cx.timer.every(30000, (cx) => cx.notify());
   }
 
@@ -227,7 +250,7 @@ export default class Agents extends View {
   // colour its name picks (as the Files panel colours folders); if a folder on show already has that
   // colour, or one that looks much the same in this theme, it gets the one furthest from those taken.
   colorsFor(folders, t) {
-    // taken: a set, and each pair of colours measured once per call.
+    // taken: a set, and each pair of colours measured once, so a long Projects list stays cheap.
     const taken = new Set(), out = new Map(), far = new Map();
     const dist = (k, u) => {
       const id = `${k}|${u}`;
@@ -256,6 +279,34 @@ export default class Agents extends View {
       localStorage.setItem("folderColors", JSON.stringify(this.colors));
     }
     return out;
+  }
+
+  // A projects folder's repos: what was found last, looked up again when over 5 minutes old.
+  projectsFor(root, cx) {
+    const got = this.projects.get(root);
+    if ((!got || Date.now() - got.at > 300000) && !this.scanning.has(root) && !checking()) {
+      this.scanning.add(root);
+      cx.spawn(async (cx) => {
+        try { this.projects.set(root, { list: await scanRoot(root), at: Date.now() }); }
+        catch (e) { this.projects.set(root, { list: [], at: Date.now(), error: String(e?.message ?? e) }); }
+        this.scanning.delete(root);
+        cx.notify();
+      });
+    }
+    return got;
+  }
+
+  // The header's button: pick a folder whose repos become projects.
+  addRoot(cx) {
+    cx.spawn(async (cx) => {
+      const dir = await pickFolder({ prompt: "Add" }).catch(() => null);
+      if (!dir) return;
+      const root = dir.replace(/[\\/]+$/, "") || dir;
+      if (!projectRoots().includes(root)) setShared(ROOTS, [...projectRoots(), root]);
+      this.projects.delete(root);
+      this.folded.delete(`proj-${root}`);
+      cx.notify();
+    });
   }
 
   since(a) {
@@ -305,12 +356,39 @@ export default class Agents extends View {
     openOverlay({ mod: "dendro-agents-panel", kind: "popup", at: "pointer", width: 250, height: 300, props: { menu: { space, agent } } });
   }
 
+  // Right-click a project: open it, or start an agent in it (and rename or close the space open
+  // there, which has no other row); a folder's header: rescan or remove it.
+  openProjectMenu(project, root) {
+    const agentCount = (shared("new-menu.agents")?.[""] ?? []).filter((x) => x.installed !== false && x.run?.length).length || 2;
+    const sp = project && spaces().find((s) => !s.machine && within(place(s, panes()), project.path));
+    const height = 14 + 26 + 31 * (project ? 1 + agentCount + (sp ? 2 : 0) : 0) + (project ? 35 : 0) + 31 * 2;
+    openOverlay({ mod: "dendro-agents-panel", kind: "popup", at: "pointer", width: 260, height: Math.min(440, height), props: { menu: { project, root } } });
+  }
+
+  // Go to the space working in that folder, else make one there.
+  openProject(path) {
+    const sp = spaces().find((s) => !s.machine && within(place(s, panes()), path));
+    if (sp) run("space.select", { id: sp.id });
+    else run("space.new", { folder: path, machine: "" });
+  }
+
   initMenu(cx) {
     const m = props().menu, a = m.agent;
     this.at = 0;
     this.git = null;
     this.handle = cx.focus_handle();
     this.handle.focus();
+    if (m.project) {
+      // The agents Herdr can start (its + menu's list), installed ones only.
+      const usable = (list) => (list ?? []).filter((x) => x.installed !== false && x.run?.length);
+      this.startable = usable(shared("new-menu.agents")?.[""]);
+      cx.spawn(async (cx) => {
+        const fresh = await knownAgents({ on: null }).catch(() => null);
+        if (fresh) this.startable = usable(fresh);
+        cx.notify();
+      });
+      return;
+    }
     if (a) {
       // How to start that agent: Herdr's own command for it (the list its + menu uses), else what was typed.
       const known = (list) => list?.find((x) => x.key === a.key && x.run?.length);
@@ -334,6 +412,24 @@ export default class Agents extends View {
     const m = props().menu, a = m.agent, out = [];
     const ic = (name) => `mods/workspace-chrome/${name}.svg`;
     const tree = (action) => () => openOverlay({ mod: "worktree", kind: "dialog", ...(action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: { space: m.space, action } });
+    if (m.root) {
+      const p = m.project;
+      if (p) {
+        const sp = spaces().find((s) => !s.machine && within(place(s, panes()), p.path));
+        out.push({ head: p.name, label: sp ? "Go to its space" : "Open in a new space", icon: ic(sp ? "layers" : "folder"), go: () => this.openProject(p.path) });
+        for (const ag of this.startable ?? []) out.push({ label: `New ${ag.name} session`, pic: icon(ag, 14, t.foreground), icon: ic("plus"), go: () => {
+          const now = spaces().find((s) => !s.machine && within(place(s, panes()), p.path));
+          if (now) { run("tab.new", { name: ag.name, space: now.id, folder: p.path, argv: ag.run }); run("space.select", { id: now.id }); }
+          else run("space.new", { folder: p.path, argv: ag.run, machine: "" });
+        } });
+        if (sp) out.push({ label: "Rename space", icon: ic("square-pen"), go: () => run("space.rename", { id: sp.id }) },
+          { label: "Close space", icon: ic("x"), go: () => run("space.close", { id: sp.id }) });
+      }
+      const h = home(), shown = h && within(m.root, h) ? "~" + m.root.slice(h.length) : m.root;
+      out.push({ head: `Projects · ${shown}`, label: "Look for new repos", icon: ic("search"), go: () => setShared(RESCAN, Date.now()) });
+      out.push({ label: "Remove from Projects", icon: ic("x"), go: () => setShared(ROOTS, projectRoots().filter((r) => r !== m.root)) });
+      return out;
+    }
     if (a) {
       const can = Boolean(this.argv?.length);
       out.push({ label: can || !this.checked ? `New ${a.name} session` : `Can't start ${a.name} from here`, pic: icon(a, 14, can ? t.foreground : t.dim), icon: ic("plus"), off: !can, go: () => {
@@ -461,7 +557,16 @@ export default class Agents extends View {
     const cwdOf = new Map(panes().map((p) => [p.pane, p.cwd])), termCwd = new Map(all.map((x) => [x.address, x.cwd]));
     const spaceFolder = new Map(spaces().map((sp) => [sp.id, sp.folder]));
     const folderOf = new Map(list.map((a) => [a.address, this.folderOf(a, cwdOf.get(a.pane) || termCwd.get(a.address) || spaceFolder.get(a.space), cx)]));
-    const colorKey = this.colorsFor([...new Set(folderOf.values())].sort(), t);
+    // Projects' repos (cached; looked up again now and then) share the colours: boxes pick first.
+    const boxFolders = [...new Set(folderOf.values())].sort(), boxed = new Set(boxFolders);
+    // Asked to look again: what was found stays on show until the new list is in.
+    const rescan = shared(RESCAN);
+    if (rescan !== this.rescan) { this.rescan = rescan; for (const got of this.projects.values()) got.at = 0; }
+    const projectLists = (collapsed ? [] : projectRoots()).map((root) => {
+      const got = this.projectsFor(root, cx);
+      return { root, got, all: (got?.list ?? []).filter((p) => !boxed.has(p.path)) };
+    });
+    const colorKey = this.colorsFor([...boxFolders, ...new Set(projectLists.flatMap((l) => l.all.map((p) => p.path)))], t);
     const tabColors = {};
     for (const a of list) tabColors[a.tab] ??= colorKey.get(folderOf.get(a.address));
     const sent = JSON.stringify(tabColors);
@@ -671,6 +776,7 @@ export default class Agents extends View {
     // Spaces with no agent (only shells, say) aren't in any group: a row each, so they can still be
     // reached, renamed and closed from here.
     const allPanes = panes(), allSpaces = spaces();
+    const placeOf = new Map(allSpaces.map((sp) => [sp.id, place(sp, allPanes)]));   // once each, not per row
     const spaceRow = (sp) => {
       const folder = place(sp, allPanes) || "";
       return h_flex().id(`space-${sp.id}`).h(30).px(9).gap(7).flex_none().rounded(8).items_center().cursor_pointer()
@@ -689,12 +795,52 @@ export default class Agents extends View {
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(sp.id); })
       .tooltip(sp.name)
       .child(svg("mods/dendro-agents-panel/folder.svg").size(14).flex_none().text_color(sp.active ? folderColor(sp.name, t) : t.dim));
-    const empty = allSpaces.filter((sp) => !peopled.has(sp.id));
+    // Projects: each added folder's repos that have no agent (those have a box above). A space
+    // open in one is marked on its row and left out of "No agents", while that row is on show.
+    const listed = [];
+    const spaceIn = (path) => allSpaces.find((sp) => !sp.machine && within(placeOf.get(sp.id), path));
+    const note = (text) => div().px(9).py(4).flex_none().text_size(11.5).text_color(t.dim).child(text);
+    const projectRow = (p, root) => {
+      const sp = spaceIn(p.path), color = t[colorKey.get(p.path)] ?? folderColor(p.name, t);
+      return h_flex().id(`proj-${p.path}`).h(28).px(9).gap(7).flex_none().rounded(8).items_center().cursor_pointer()
+        .when(Boolean(sp?.active), (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
+        .on_click(() => this.openProject(p.path))
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openProjectMenu({ path: p.path, name: p.name }, root); })
+        .tooltip(sp ? `${pretty(p.path)} \u00b7 open in ${sp.name}` : pretty(p.path))
+        .child(svg("mods/dendro-agents-panel/folder.svg").size(14).flex_none().text_color(sp ? color : alpha(color, "8c")))
+        .child(div().flex_1().min_w(0).truncate().text_color(sp ? t.foreground : t.muted).child(p.name))
+        .when(Boolean(sp), (el) => el.child(div().size(5).rounded(3).flex_none().bg(color)))
+        .when(p.at > 0, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - p.at * 1000))));
+    };
+    const projectSections = projectLists.flatMap(({ root, got, all }) => {
+      const key = `proj-${root}`, open = !this.folded.has(key), more = this.moreShown.has(root);
+      const onShow = open ? (more ? all : all.slice(0, PROJECTS_SHOWN)) : [];
+      listed.push(...onShow.map((p) => p.path));
+      const head = h_flex().id(key).px(8).pt(10).h(32).flex_none().gap(6).items_center().text_size(11).font_medium().text_color(t.dim).cursor_pointer()
+        .hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { open ? this.folded.add(key) : this.folded.delete(key); cx.notify(); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openProjectMenu(null, root); })
+        .child(div().flex_none().child("Projects"))
+        .child(div().flex_1().min_w(0).truncate().child(`\u00b7 ${pretty(root)}`))
+        .child(div().flex_none().child(got ? String(all.length) : "\u2026"))
+        .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none());
+      if (!open) return [head];
+      const rows = onShow.map((p) => projectRow(p, root));
+      if (got?.error) rows.push(note(got.error));
+      else if (got && !all.length) rows.push(note(got.list.length ? "Each repo here has agents above" : "No git repos directly in this folder"));
+      if (all.length > PROJECTS_SHOWN) rows.push(div().id(`proj-more-${root}`).px(9).h(24).flex_none().flex().items_center().text_size(11.5).text_color(t.dim)
+        .cursor_pointer().hover((s) => s.text_color(t.foreground))
+        .on_click((_e, cx) => { more ? this.moreShown.delete(root) : this.moreShown.add(root); cx.notify(); })
+        .child(more ? "Show fewer" : `${all.length - PROJECTS_SHOWN} more`));
+      return [head, ...rows];
+    });
+    const empty = allSpaces.filter((sp) => !peopled.has(sp.id) && !(!sp.machine && listed.some((path) => within(placeOf.get(sp.id), path))));
     const rows = collapsed
       ? [...list.flatMap(withKids), ...(empty.length ? [div().mx(8).my(5).h(1).flex_none().bg(t.border), ...empty.map(railSpace)] : [])]
       : [
         ...groups.flatMap((g) => byFolder && g.folder ? [box(g)] : [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]),
         ...(empty.length ? [div().px(8).pt(10).pb(5).flex_none().text_size(11).font_medium().text_color(t.dim).child("No agents"), ...empty.map(spaceRow)] : []),
+        ...projectSections,
       ];
 
     return v_flex()
@@ -716,6 +862,10 @@ export default class Agents extends View {
             .justify_between()
             .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
             .child(h_flex().gap(12).items_center()
+              .child(div().id("ag-projects").text_color(t.dim).hover((s) => s.text_color(t.foreground))
+                .on_click((_e, cx) => this.addRoot(cx))
+                .tooltip("Add a folder of projects (the git repos in it)")
+                .child(svg("mods/workspace-chrome/folder-plus.svg").size(14)))
               .child(div().id("ag-new").text_color(t.dim).hover((s) => s.text_color(t.foreground))
                 .on_click(() => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 }))
                 .tooltip("New terminal, agent or space")
