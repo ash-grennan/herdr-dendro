@@ -62,6 +62,8 @@ const SORTS = [
   { id: "grouped", label: "Grouped by space", icon: "layers" },
 ];
 const SORT_KEY = "dendro.agents.sort";
+// Tab id -> the colour (a theme key) of its first agent's folder, for the tab bar's tab borders.
+const TAB_COLORS = "dendro.agents.tabColors";
 const sortOf = () => SORTS.find((s) => s.id === shared(SORT_KEY)) ?? SORTS[0];
 
 // Folder colours: the same name-picked bright ANSI colours as the Files panel.
@@ -72,6 +74,15 @@ function folderColor(name, t) {
   return t[PALETTE[h % PALETTE.length]] ?? t.accent;
 }
 const alpha = (c, a) => /^#[0-9a-f]{6}$/i.test(c) ? c + a : c;
+// How far apart two theme colours look (0 the same, ~765 black to white); null when not #rrggbb.
+function apart(x, y) {
+  const rgb = (c) => /^#[0-9a-f]{6}$/i.test(c ?? "") ? [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)) : null;
+  const a = rgb(x), b = rgb(y);
+  if (!a || !b) return null;
+  const mean = (a[0] + b[0]) / 2, d = a.map((v, i) => v - b[i]);
+  return Math.sqrt((2 + mean / 256) * d[0] ** 2 + 4 * d[1] ** 2 + (2 + (255 - mean) / 256) * d[2] ** 2);
+}
+const TOO_CLOSE = 90;
 const base = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
 // Where a space is now: its first terminal's live folder, else where it was made.
 function place(sp, all) {
@@ -118,6 +129,8 @@ export default class Agents extends View {
     // Spaces this panel named after their agent's folder: space id -> the name it gave.
     try { this.spaceNames = JSON.parse(localStorage.getItem("spaceNames") ?? "{}"); } catch { this.spaceNames = {}; }
     this.naming = {};         // space id -> { name, at }: the rename last asked for
+    // Folder -> the colour it was given (a theme key), kept so a folder stays the colour you know.
+    try { this.colors = JSON.parse(localStorage.getItem("folderColors") ?? "{}"); } catch { this.colors = {}; }
     this.asking = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
   }
@@ -208,6 +221,41 @@ export default class Agents extends View {
     }
     for (const id of Object.keys(this.spaceNames)) if (!all_spaces.some((sp) => sp.id === id)) { delete this.spaceNames[id]; changed = true; }
     if (changed) localStorage.setItem("spaceNames", JSON.stringify(this.spaceNames));
+  }
+
+  // A colour for each folder on show, no two alike while the palette lasts. A folder asks for the
+  // colour its name picks (as the Files panel colours folders); if a folder on show already has that
+  // colour, or one that looks much the same in this theme, it gets the one furthest from those taken.
+  colorsFor(folders, t) {
+    // taken: a set, and each pair of colours measured once per call.
+    const taken = new Set(), out = new Map(), far = new Map();
+    const dist = (k, u) => {
+      const id = `${k}|${u}`;
+      if (!far.has(id)) far.set(id, apart(t[k], t[u]) ?? Infinity);
+      return far.get(id);
+    };
+    const gap = (k) => { let g = Infinity; for (const u of taken) g = Math.min(g, u === k ? 0 : dist(k, u)); return g; };
+    let changed = false;
+    for (const f of folders) {            // first the folders that keep the colour they had
+      const k = this.colors[f];
+      if (!PALETTE.includes(k) || gap(k) < TOO_CLOSE) continue;
+      taken.add(k); out.set(f, k);
+    }
+    for (const f of folders) {
+      if (out.has(f)) continue;
+      let h = 0;
+      for (const ch of base(f).toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      let k = PALETTE[h % PALETTE.length];
+      if (gap(k) < TOO_CLOSE) k = PALETTE.reduce((best, c) => gap(c) > gap(best) ? c : best, k);
+      taken.add(k); out.set(f, k);
+      if (this.colors[f] !== k) { this.colors[f] = k; changed = true; }
+    }
+    if (changed) {
+      const kept = Object.keys(this.colors);
+      if (kept.length > 100) for (const f of kept) if (!out.has(f)) delete this.colors[f];
+      localStorage.setItem("folderColors", JSON.stringify(this.colors));
+    }
+    return out;
   }
 
   since(a) {
@@ -412,7 +460,15 @@ export default class Agents extends View {
     // Each agent's folder (folders view): its pane's live folder, else its terminal's, else its space's.
     const cwdOf = new Map(panes().map((p) => [p.pane, p.cwd])), termCwd = new Map(all.map((x) => [x.address, x.cwd]));
     const spaceFolder = new Map(spaces().map((sp) => [sp.id, sp.folder]));
-    const folderOf = new Map(byFolder ? list.map((a) => [a.address, this.folderOf(a, cwdOf.get(a.pane) || termCwd.get(a.address) || spaceFolder.get(a.space), cx)]) : []);
+    const folderOf = new Map(list.map((a) => [a.address, this.folderOf(a, cwdOf.get(a.pane) || termCwd.get(a.address) || spaceFolder.get(a.space), cx)]));
+    const colorKey = this.colorsFor([...new Set(folderOf.values())].sort(), t);
+    const tabColors = {};
+    for (const a of list) tabColors[a.tab] ??= colorKey.get(folderOf.get(a.address));
+    const sent = JSON.stringify(tabColors);
+    if (sent !== this.sentColors) {
+      this.sentColors = sent;
+      cx.timer.after(0, () => setShared(TAB_COLORS, tabColors));   // not while rendering: it redraws every mod
+    }
     if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || this.since(y) - this.since(x) || y.seq - x.seq);
     // Folders: alphabetical, so a folder stays where you last saw it; inside, the most urgent first.
     if (byFolder) list = [...list].sort((x, y) => base(folderOf.get(x.address)).localeCompare(base(folderOf.get(y.address))) || folderOf.get(x.address).localeCompare(folderOf.get(y.address)) || rankOf(y) - rankOf(x) || this.since(y) - this.since(x));
@@ -594,7 +650,7 @@ export default class Agents extends View {
     const h = home();
     const pretty = (p) => h && p.startsWith(h + "/") ? "~" + p.slice(h.length) : p;
     const box = (g) => {
-      const open = !this.folded.has(g.id), color = folderColor(g.label, t);
+      const open = !this.folded.has(g.id), color = t[colorKey.get(g.folder)] ?? folderColor(g.label, t);
       const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);
       const parent = pretty(g.folder).replace(/[\\/][^\\/]*$/, "");
       // A box can hold agents of more than one space: its menu is for the one you're in, else its first agent's.

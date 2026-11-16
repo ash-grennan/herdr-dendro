@@ -26,6 +26,10 @@ function sessionTitle(c, lead) {
 }
 const short = (s) => { const chars = [...s]; return chars.length > TAB_CHARS ? chars.slice(0, TAB_CHARS - 1).join("").trimEnd() + "…" : s; };
 
+// An agent's tab is bordered in the colour of its folder's box in the Agents panel, which picks
+// the colours and says which each tab gets (tab id -> a theme key).
+const alpha = (c, a) => /^#[0-9a-f]{6}$/i.test(c) ? c + a : c;
+
 export default class Tabs extends View {
   init() {
     this.pressed = null;
@@ -49,15 +53,17 @@ export default class Tabs extends View {
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
+    const tabColors = shared("dendro.agents.tabColors") ?? {};
     const item = (c, i) => {
       const lead = panes().find(p => p.tab === c.id && p.program?.agent) ?? panes().find(p => p.tab === c.id);
       const program = lead?.program;
       const session = lead?.program?.agent ? sessionTitle(c, lead) : null;
+      const tint = lead?.program?.agent && /^ansi\d+$/.test(tabColors[c.id] ?? "") ? t[tabColors[c.id]] ?? null : null;
       const name = session ? short(session) : /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         // A rename or status dot on this or an earlier tab can push the active one out.
         .when(i <= active, el => el.on_size_change((_size, cx) => { this.scroll.scroll_to_item(active); cx.notify(); }))
-        .border(1).border_color(c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
+        .border(1).border_color(tint ? alpha(tint, c.active ? "e6" : "66") : c.active ? t.border : t.chrome).bg(c.active ? t.raised : t.chrome).text_color(c.active ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover))
         .on_mouse_down("left", (e, cx) => { cx.stop_propagation(); this.pressed = i; if (e.click_count === 2) run("tab.rename", { id: c.id }); })
         .on_mouse_up("left", () => {
