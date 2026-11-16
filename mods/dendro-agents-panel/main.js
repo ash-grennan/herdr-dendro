@@ -1,5 +1,7 @@
 // Agents grouped into light, colour-coded boxes by folder (the agent's git repo, else its
 // folder), plus Herdr's priority and by-space views. Based on Herdr's shipped `agents` mod.
+// It stands in for the Spaces list too: spaces without an agent get a row at the bottom, the
+// space you're in is marked, and right-click gives a space's menu (rename, worktrees, close).
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -71,6 +73,19 @@ function folderColor(name, t) {
 }
 const alpha = (c, a) => /^#[0-9a-f]{6}$/i.test(c) ? c + a : c;
 const base = (path) => path.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || path;
+// Where a space is now: its first terminal's live folder, else where it was made.
+function place(sp, all) {
+  const tabs = new Set((sp.tabs ?? []).map((c) => c.id));
+  return all.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || sp.folder;
+}
+// A space's checkout: "main" (a repo's own), "linked" (a worktree), or null.
+// A linked worktree has a git dir of its own under the shared one; a submodule's are the same.
+async function checkout(folder, on) {
+  const r = await exec("git", ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"], { cwd: folder, on });
+  const [dir, common] = r.code === 0 ? r.stdout.trim().split("\n") : [];
+  if (!dir || !common) return null;
+  return dir === common ? "main" : "linked";
+}
 const SECTION = { 4: "Needs you", 3: "Done", 2: "Working", 1: "Idle" };
 const SECTION_STATUS = { 4: "blocked", 3: "done", 2: "working" };
 
@@ -91,11 +106,12 @@ function icon(p, size, color) {
 export default class Agents extends View {
   init(_props, cx) {
     if (props()?.sortMenu) return;
-    if (props()?.rowMenu) return this.initRowMenu(cx);
+    if (props()?.menu) return this.initMenu(cx);
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
-    this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
-    this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
+    try { this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}") ?? {}; } catch { this.changed = {}; }
+    try { this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]"); } catch { this.pendingPins = []; }
+    if (!Array.isArray(this.pendingPins)) this.pendingPins = [];
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     this.roots = new Map();   // "machine\0cwd" -> repo root (or the cwd itself)
@@ -228,54 +244,91 @@ export default class Agents extends View {
         .when(s.id === on, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(14).flex_none().text_color(t.foreground)))));
   }
 
-  // Right-click on an agent: a popup (this mod again, with props.rowMenu) offering another
-  // session of the same agent, in the same folder, as a new tab in that agent's space.
-  openRowMenu(a, cwd) {
-    const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
-    const p = a.program ?? {};
-    // Not one of the agents Herdr can start from a menu: the command that is running in its terminal.
-    const typed = terminals().find((x) => x.address === a.address)?.foreground?.argv?.[0];
-    openOverlay({ mod: "dendro-agents-panel", kind: "popup", at: "pointer", width: 250, height: 41,
-      props: { rowMenu: { space: a.space, folder: cwd ?? null, machine, key: p.key ?? null, name: p.name || a.app || "agent", icon: p.icon ?? null, tint: Boolean(p.tint), typed: typed ? [typed] : null } } });
+  // Right-click: a popup (this mod again, with props.menu) for a space, and for an agent when one
+  // was clicked: another session of the same agent, in the same folder, as a new tab in its space.
+  openMenu(space, a, cwd) {
+    let agent = null;
+    if (a) {
+      const p = a.program ?? {};
+      // Not one of the agents Herdr can start from a menu: the command that is running in its terminal.
+      const typed = terminals().find((x) => x.address === a.address)?.foreground?.argv?.[0];
+      agent = { folder: cwd ?? null, machine: a.address.includes("/") ? a.address.split("/")[0] : null, key: p.key ?? null, name: p.name || a.app || "agent", icon: p.icon ?? null, tint: Boolean(p.tint), typed: typed ? [typed] : null };
+    }
+    openOverlay({ mod: "dendro-agents-panel", kind: "popup", at: "pointer", width: 250, height: 300, props: { menu: { space, agent } } });
   }
 
-  // How to start that agent: Herdr's own command for it (the list its + menu uses), else what was typed.
-  initRowMenu(cx) {
-    const m = props().rowMenu, where = m.machine ?? "";
-    const known = (list) => list?.find((x) => x.key === m.key && x.run?.length);
-    const cached = known(shared("new-menu.agents")?.[where]);
-    this.argv = cached?.run ?? m.typed;
+  initMenu(cx) {
+    const m = props().menu, a = m.agent;
+    this.at = 0;
+    this.git = null;
     this.handle = cx.focus_handle();
     this.handle.focus();
-    cx.spawn(async (cx) => {
-      const found = known(await knownAgents({ on: m.machine }).catch(() => null));
-      if (found) this.argv = found.run;
-      this.checked = true;
+    if (a) {
+      // How to start that agent: Herdr's own command for it (the list its + menu uses), else what was typed.
+      const known = (list) => list?.find((x) => x.key === a.key && x.run?.length);
+      this.argv = known(shared("new-menu.agents")?.[a.machine ?? ""])?.run ?? a.typed;
+      cx.spawn(async (cx) => {
+        const found = known(await knownAgents({ on: a.machine }).catch(() => null));
+        if (found) this.argv = found.run;
+        this.checked = true;
+        cx.notify();
+      });
+    }
+    const sp = spaces().find((s) => s.id === m.space), folder = sp && place(sp, panes());
+    if (folder) cx.spawn(async (cx) => {
+      this.git = await checkout(folder, sp.machine).catch(() => null);
       cx.notify();
     });
   }
 
-  startAgain() {
-    const m = props().rowMenu;
-    if (!this.argv?.length) return;
-    closeOverlay(props().overlay);
-    run("tab.new", { name: m.name, space: m.space, ...(m.folder ? { folder: m.folder } : {}), argv: this.argv });
-    if (!spaces().find((s) => s.id === m.space)?.active) run("space.select", { id: m.space });
+  // { label, icon | pic, go, off?, head? }: head puts a line and the space's name above the item.
+  menuItems(t) {
+    const m = props().menu, a = m.agent, out = [];
+    const ic = (name) => `mods/workspace-chrome/${name}.svg`;
+    const tree = (action) => () => openOverlay({ mod: "worktree", kind: "dialog", ...(action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: { space: m.space, action } });
+    if (a) {
+      const can = Boolean(this.argv?.length);
+      out.push({ label: can || !this.checked ? `New ${a.name} session` : `Can't start ${a.name} from here`, pic: icon(a, 14, can ? t.foreground : t.dim), icon: ic("plus"), off: !can, go: () => {
+        run("tab.new", { name: a.name, space: m.space, ...(a.folder ? { folder: a.folder } : {}), argv: this.argv });
+        if (!spaces().find((s) => s.id === m.space)?.active) run("space.select", { id: m.space });
+      } });
+    }
+    const sp = spaces().find((s) => s.id === m.space);
+    if (!sp) return out;
+    out.push({ head: `Space · ${sp.name}`, label: "Rename space", icon: ic("square-pen"), go: () => run("space.rename", { id: sp.id }) });
+    if (this.git) out.push({ label: "New worktree", icon: ic("git-branch"), go: tree("new") }, { label: "Open worktree", icon: ic("git-branch"), go: tree("open") });
+    if (this.git === "linked") out.push({ label: "Remove worktree", icon: ic("git-branch"), go: tree("remove") });
+    out.push({ label: "Close space", icon: ic("x"), go: () => run("space.close", { id: sp.id }) });
+    return out;
   }
 
-  rowMenu(t) {
-    const m = props().rowMenu, can = Boolean(this.argv?.length);
-    const pic = icon(m, 14, can ? t.foreground : t.dim) ?? svg("mods/workspace-chrome/plus.svg").size(14).flex_none().text_color(t.muted);
+  menu(t) {
+    const list = this.menuItems(t);
+    const choose = (i) => {
+      const it = list[i];
+      if (!it || it.off) return;
+      closeOverlay(props().overlay);
+      it.go();
+    };
     return v_flex().id("agent-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
-      .on_key_down((e) => {
-        if (e.key === "enter") this.startAgain();
+      .on_key_down((e, cx) => {
+        if (e.key === "down") this.at = (this.at + 1) % list.length;
+        else if (e.key === "up") this.at = (this.at + list.length - 1) % list.length;
+        else if (e.key === "enter") choose(this.at);
         else if (e.key === "escape") closeOverlay(props().overlay);
+        else return;
+        cx.notify();
       })
-      .child(h_flex().id("agent-menu-new").h(31).px(8).gap(9).rounded(7).items_center()
-        .text_color(can ? t.foreground : t.dim).when(can, (el) => el.bg(t.selected).cursor_pointer())
-        .on_click(() => this.startAgain())
-        .child(pic)
-        .child(div().flex_1().min_w(0).truncate().child(can || !this.checked ? `New ${m.name} session` : `Can't start ${m.name} from here`)));
+      .children(list.map((it, i) => v_flex()
+        .when(it.head !== undefined, (el) => el
+          .when(i > 0, (el) => el.child(div().mx(7).my(4).h(1).bg(t.border)))
+          .child(div().px(8).pt(4).pb(5).text_size(11).text_color(t.dim).truncate().child(it.head)))
+        .child(h_flex().id(`am-${i}`).h(31).px(8).gap(9).rounded(7).items_center()
+          .text_color(it.off ? t.dim : t.foreground)
+          .when(i === this.at && !it.off, (el) => el.bg(t.selected)).when(!it.off, (el) => el.hover((s) => s.bg(t.hover)))
+          .on_click(() => choose(i))
+          .child(it.pic ?? svg(it.icon).size(14).flex_none().text_color(t.muted))
+          .child(div().flex_1().min_w(0).truncate().child(it.label)))));
   }
 
   peek(addr) {
@@ -334,7 +387,7 @@ export default class Agents extends View {
   render(cx) {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
-    if (props()?.rowMenu) return this.rowMenu(t);
+    if (props()?.menu) return this.menu(t);
     const collapsed = narrow();
     const sort = sortOf();
     let list = agents();
@@ -342,11 +395,13 @@ export default class Agents extends View {
     const all = terminals();
     this.migratePins(all);
     const shown = focused()?.agent;
+    const here = spaces().find((sp) => sp.active)?.id;   // the space you're in
     const now = Date.now();
     this.track(list, now);
     this.nameSpaces(list, all, cx);
     // A kept sub-agent (one with a pane) is in agents() too: where a tree shows
     // it, it gets no row of its own, unless it's pinned.
+    const peopled = new Set(list.map((a) => a.space));
     const nested = new Set(collapsed ? [] : list.flatMap((a) => this.tree(all, a.address).map((s) => s.t.address)));
     list = list.filter((a) => a.pinned || !nested.has(a.address));
     const tabCounts = new Map();
@@ -477,7 +532,7 @@ export default class Agents extends View {
           cx.notify();
         })
         .on_click(() => run("pane.focus", { pane: a.pane }))
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openRowMenu(a, cwdOf.get(a.pane) || termCwd.get(a.address)); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(a.space, a, cwdOf.get(a.pane) || termCwd.get(a.address)); })
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
@@ -488,6 +543,8 @@ export default class Agents extends View {
           .child(div().min_w(0).max_w(full && more ? 120 : 200).truncate().text_color(idle ? t.muted : t.foreground).child(name))
           .when(full && Boolean(more), el => el.child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(`\u00b7 ${more}`))))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
+        // In a folder's box, but its tab lives in a space called something else: say which.
+        .when(byFolder && !isPinned && Boolean(a.space_name) && a.space_name !== base(folderOf.get(a.address) ?? ""), el => el.child(div().flex_none().max_w(70).truncate().text_size(10).text_color(t.dim).child(a.space_name)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
@@ -502,7 +559,7 @@ export default class Agents extends View {
       const folder = folderOf.get(a.address);
       const id = byPriority ? `sec-${r}` : byFolder ? `dir-${folder}` : `sp-${a.space}`;
       if (groups.at(-1)?.id === id) groups.at(-1).members.push(a);
-      else groups.push({ id, label: byPriority ? SECTION[r] : byFolder ? base(folder) : a.space_name || "", folder: byFolder ? folder : null, status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
+      else groups.push({ id, label: byPriority ? SECTION[r] : byFolder ? base(folder) : a.space_name || "", folder: byFolder ? folder : null, space: byPriority || byFolder ? null : a.space, status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
     }
 
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.
@@ -525,7 +582,8 @@ export default class Agents extends View {
           open ? this.folded.add(g.id) : this.folded.delete(g.id);
           cx.notify();
         })
-        .child(div().truncate().text_color(t[g.status] ?? t.dim).child(g.label))
+        .when(Boolean(g.space), (el) => el.on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(g.space); }))
+        .child(div().truncate().text_color(g.space && g.space === here ? t.foreground : (t[g.status] ?? t.dim)).child(g.label))
         .when(byPriority || !open, (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))
         .child(div().flex_1())
         .when(!open, (el) => el
@@ -539,11 +597,14 @@ export default class Agents extends View {
       const open = !this.folded.has(g.id), color = folderColor(g.label, t);
       const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);
       const parent = pretty(g.folder).replace(/[\\/][^\\/]*$/, "");
+      // A box can hold agents of more than one space: its menu is for the one you're in, else its first agent's.
+      const mine = g.members.some((a) => a.space === here), space = mine ? here : g.members[0].space;
       return v_flex().id(`box-${g.id}`).flex_none().mb(6).p(3).rounded(10)
-        .bg(alpha(color, "0f")).border_1().border_color(alpha(color, "38"))
+        .bg(alpha(color, mine ? "1c" : "0f")).border_1().border_color(alpha(color, mine ? "99" : "38"))
         .child(h_flex().id(g.id).h(28).px(6).gap(7).flex_none().items_center().rounded(7).cursor_pointer()
           .hover((s) => s.bg(alpha(color, "1a")))
           .on_click((_e, cx) => { open ? this.folded.add(g.id) : this.folded.delete(g.id); cx.notify(); })
+          .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(space); })
           .child(svg(`mods/dendro-agents-panel/folder${open ? "-open" : ""}.svg`).size(14).flex_none().text_color(color))
           .child(div().flex_none().max_w(140).truncate().text_size(12.5).font_semibold().text_color(color).child(g.label))
           .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(parent))
@@ -551,9 +612,34 @@ export default class Agents extends View {
           .when(!open && top && top !== "idle", (el) => el.child(this.status(t, { status: top }, true))))
         .when(open, (el) => el.children(g.members.flatMap(withKids)));
     };
+    // Spaces with no agent (only shells, say) aren't in any group: a row each, so they can still be
+    // reached, renamed and closed from here.
+    const allPanes = panes(), allSpaces = spaces();
+    const spaceRow = (sp) => {
+      const folder = place(sp, allPanes) || "";
+      return h_flex().id(`space-${sp.id}`).h(30).px(9).gap(7).flex_none().rounded(8).items_center().cursor_pointer()
+        .when(sp.active, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
+        .on_click(() => run("space.select", { id: sp.id }))
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(sp.id); })
+        .child(svg("mods/dendro-agents-panel/folder.svg").size(14).flex_none().text_color(sp.active ? folderColor(sp.name, t) : t.dim))
+        .child(div().flex_none().max_w(150).truncate().text_color(sp.active ? t.foreground : t.muted).child(sp.name))
+        .child(div().flex_1().min_w(0).truncate().text_size(10.5).text_color(t.dim).child(pretty(folder).replace(/[\\/][^\\/]*$/, "")))
+        .when(Boolean(sp.machine), (el) => el.child(div().flex_none().text_size(10).text_color(t.dim).child(sp.machine)));
+    };
+    // On the narrow rail: a folder icon each, named in its tooltip.
+    const railSpace = (sp) => h_flex().id(`space-${sp.id}`).h(26).flex_none().items_center().justify_center()
+      .when(sp.active, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
+      .on_click(() => run("space.select", { id: sp.id }))
+      .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(sp.id); })
+      .tooltip(sp.name)
+      .child(svg("mods/dendro-agents-panel/folder.svg").size(14).flex_none().text_color(sp.active ? folderColor(sp.name, t) : t.dim));
+    const empty = allSpaces.filter((sp) => !peopled.has(sp.id));
     const rows = collapsed
-      ? list.flatMap(withKids)
-      : groups.flatMap((g) => byFolder && g.folder ? [box(g)] : [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]);
+      ? [...list.flatMap(withKids), ...(empty.length ? [div().mx(8).my(5).h(1).flex_none().bg(t.border), ...empty.map(railSpace)] : [])]
+      : [
+        ...groups.flatMap((g) => byFolder && g.folder ? [box(g)] : [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]),
+        ...(empty.length ? [div().px(8).pt(10).pb(5).flex_none().text_size(11).font_medium().text_color(t.dim).child("No agents"), ...empty.map(spaceRow)] : []),
+      ];
 
     return v_flex()
       .size_full()
@@ -573,7 +659,12 @@ export default class Agents extends View {
             .items_center()
             .justify_between()
             .child(div().text_size(11.5).font_medium().text_color(t.dim).child("Agents"))
-            .child(
+            .child(h_flex().gap(12).items_center()
+              .child(div().id("ag-new").text_color(t.dim).hover((s) => s.text_color(t.foreground))
+                .on_click(() => openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512 }))
+                .tooltip("New terminal, agent or space")
+                .child(svg("mods/workspace-chrome/plus.svg").size(14)))
+              .child(
               div()
                 .id("ag-sort")
                 .text_size(11)
@@ -582,11 +673,11 @@ export default class Agents extends View {
                 .on_click(() => openOverlay({ mod: "dendro-agents-panel", kind: "popup", width: 210, height: 172, props: { sortMenu: true } }))
                 .tooltip(`Sort agents: ${sort.label}`)
                 .child(svg(sort.icon === "folder" ? "mods/dendro-agents-panel/sort-folder.svg" : `mods/workspace-chrome/${sort.icon}.svg`).size(14)),
-            ),
+            )),
         ),
       )
       .when(list.length === 0 && !collapsed, (el) =>
-        el.child(div().px(12).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
+        el.child(div().px(12).pb(6).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
       .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode("always").children(rows))
       .when(collapsed, (el) =>

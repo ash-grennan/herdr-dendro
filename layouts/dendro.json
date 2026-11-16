@@ -43,17 +43,6 @@
           "type": "column",
           "children": [
             {
-              "id": "spaces",
-              "type": "block",
-              "size": {
-                "weight": 1
-              },
-              "min": 90,
-              "content": {
-                "mod": "spaces"
-              }
-            },
-            {
               "id": "agents",
               "type": "block",
               "size": {
@@ -151,7 +140,7 @@
               "type": "column",
               "hidden": false,
               "size": {
-                "px": 716
+                "px": 440
               },
               "min": 280,
               "max": 1000,
@@ -160,7 +149,7 @@
                   "id": "changes",
                   "type": "block",
                   "size": {
-                    "weight": 1.26
+                    "weight": 1
                   },
                   "min": 160,
                   "content": {
@@ -171,7 +160,7 @@
                   "id": "files",
                   "type": "block",
                   "size": {
-                    "weight": 0.74
+                    "weight": 1
                   },
                   "min": 160,
                   "content": {
