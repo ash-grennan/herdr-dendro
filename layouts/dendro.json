@@ -190,7 +190,7 @@
             "px": 28
           },
           "content": {
-            "mod": "workspace-status"
+            "mod": "dendro-status-bar"
           }
         }
       ]

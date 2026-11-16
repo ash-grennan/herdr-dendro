@@ -8,8 +8,19 @@ A [Herdr](https://herdr.dev) layout based on the default one, with **Changes** a
 - `mods/dendro-tab-bar/`: tab bar with the Chat | Editor switch and the Terminal / Files / Changes buttons
 - `mods/dendro-editor/`: the Editor view: files opened from Files, as tabs; markdown opens rendered (Preview | Edit), and prose wraps
 - `mods/dendro-agents-panel/`: Agents list grouped into colour-coded folder boxes (the agent's git repo, else its folder)
+- `mods/dendro-status-bar/`: the bottom status bar, plus your Claude plan limits (5-hour and weekly)
 
 Install: `./install.sh`, then pick **dendro** with `ctrl-shift-l`.
+
+### Claude limits (optional)
+
+The status bar shows your Claude plan limits once Claude Code is told to report them. Add this to `~/.claude/settings.json`:
+
+```json
+"statusLine": { "type": "command", "command": "~/.config/herdr-app/mods/dendro-status-bar/claude-statusline.py" }
+```
+
+Claude Code then runs that script (needs `python3`) after each response. It prints the limits under each chat and saves them to `~/.cache/herdr-dendro/claude-limits.json`, which the status bar reads. It only has numbers when you are signed in with a Claude subscription, and they update when a session gets a response.
 
 ## License
 
