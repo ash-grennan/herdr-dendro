@@ -1,0 +1,6 @@
+{
+  "layout:dendro": {
+    "alt-p": "mod.open:dendro-quick-open",
+    "cmd-p": "mod.open:dendro-quick-open"
+  }
+}

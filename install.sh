@@ -6,7 +6,7 @@ HOME_DIR="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 here="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$HOME_DIR/layouts" "$HOME_DIR/mods"
 # icons.js lives in dendro-files-panel; mods can't import across folders, so others carry a copy.
-for m in dendro-diff-panel dendro-editor; do
+for m in dendro-diff-panel dendro-editor dendro-quick-open; do
   { echo "// Copy of mods/dendro-files-panel/icons.js (synced by install.sh; edit that one)."; grep -v '^// Copy of' "$here/mods/dendro-files-panel/icons.js"; } > "$here/mods/$m/icons.js"
 done
 for m in "$here"/mods/*/; do
@@ -19,4 +19,32 @@ for f in "$here"/layouts/*; do
   [ -L "$dest" ] && rm "$dest"
   cmp -s "$f" "$dest" 2>/dev/null || cp "$f" "$dest"
 done
+# Keys (keys.json): added to yours, never replacing a key you already use.
+if [ ! -f "$HOME_DIR/keys.json" ] || ! command -v python3 >/dev/null; then
+  echo "keys not added: copy the bindings in keys.json into $HOME_DIR/keys.json yourself"
+else
+  python3 - "$here/keys.json" "$HOME_DIR/keys.json" <<'PY'
+import json, sys
+ours, path = json.load(open(sys.argv[1])), sys.argv[2]
+with open(path) as f:
+    yours = json.load(f)
+changed = False
+for section, binds in ours.items():
+    mine = yours.setdefault(section, {})
+    for key, action in binds.items():
+        used = [s for s in (section, "global", "terminal") if key in yours.get(s, {})]
+        if mine.get(key) == action:
+            continue
+        if used:
+            print(f"keys: {key} left as it is ({used[0]} has it); bind {action} to another key in {path} if you want it")
+            continue
+        mine[key] = action
+        changed = True
+        print(f"keys: {key} -> {action}")
+if changed:
+    with open(path, "w") as f:
+        json.dump(yours, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+PY
+fi
 echo "installed into $HOME_DIR"

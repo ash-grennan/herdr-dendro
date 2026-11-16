@@ -3,7 +3,7 @@
 // Built on Herdr's own Editor (syntax highlighting, line numbers, folding).
 import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
-import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home, spaces } from "herdr";
+import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home, spaces, window } from "herdr";
 import { fileIcon } from "./icons.js";
 
 // The Editor's language names, where they differ from the file extension.
@@ -212,6 +212,6 @@ export default class DendroEditor extends View {
           .child(TextView.markdown(`dendro-md-text-${d.path}`, d.state.value()).selectable(true))
         : d?.state ? Editor.new(d.state).flex_1().min_h(0)
         : div().flex_1().flex().items_center().justify_center().text_color(t.dim)
-          .child(d ? (d.error ?? "Opening…") : "Click a file in Files to open it here"));
+          .child(d ? (d.error ?? "Opening…") : `Click a file in Files, or press ${window()?.platform === "macos" ? "⌘P" : "Alt+P"} to find one`));
   }
 }
