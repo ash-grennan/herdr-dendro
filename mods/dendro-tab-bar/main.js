@@ -13,6 +13,19 @@ function find(node, id) {
   return null;
 }
 
+// A tab nobody named is called after its agent's session, as the Agents panel calls it, cut to
+// TAB_CHARS so tabs stay narrow (the whole title is the tooltip). A name you gave a tab is kept whole.
+const TAB_CHARS = 12;
+const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
+function sessionTitle(c, lead) {
+  const prog = lead?.program?.name, live = clean(lead?.title);
+  if (c.named && c.name !== prog) return null;
+  // Not a title that only repeats the program, a folder, or user@host.
+  const path = /^[~/]|^[A-Za-z]:\\/.test((lead?.title ?? "").replace(/^[^\p{L}\p{N}~/]+/u, ""));
+  return live && live !== prog && !path && !live.includes("@") && live.toLowerCase() !== lead?.program?.key ? live : null;
+}
+const short = (s) => { const chars = [...s]; return chars.length > TAB_CHARS ? chars.slice(0, TAB_CHARS - 1).join("").trimEnd() + "…" : s; };
+
 export default class Tabs extends View {
   init() {
     this.pressed = null;
@@ -37,8 +50,10 @@ export default class Tabs extends View {
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
     const item = (c, i) => {
-      const program = panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
-      const name = /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
+      const lead = panes().find(p => p.tab === c.id && p.program?.agent) ?? panes().find(p => p.tab === c.id);
+      const program = lead?.program;
+      const session = lead?.program?.agent ? sessionTitle(c, lead) : null;
+      const name = session ? short(session) : /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : c.name;
       return h_flex().id(`tab-${c.id}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         // A rename or status dot on this or an earlier tab can push the active one out.
         .when(i <= active, el => el.on_size_change((_size, cx) => { this.scroll.scroll_to_item(active); cx.notify(); }))
@@ -52,6 +67,7 @@ export default class Tabs extends View {
           if (find(layout(), "center")?.active === "editor") run("layout.select", { stack: "center", child: "main" });
         })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
+        .when(Boolean(session) && name !== session, el => el.tooltip(session))
         .when(Boolean(program?.icon), el => el.child(program.tint ? svg(program.icon).size(14).text_color(t.muted) : image(program.icon).size(14)))
         .child(div().max_w(170).truncate().child(c.zoomed ? `${name} Z` : name))
         .when(c.status === "working", el => el.child(svg("mods/workspace-chrome/spinner.svg").size(12).flex_none().text_color(t.working).spin(900)))

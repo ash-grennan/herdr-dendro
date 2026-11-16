@@ -6,7 +6,7 @@ A [Herdr](https://herdr.dev) layout based on the default one, with **Changes** a
 - `mods/dendro-diff-panel/`: Changes panel; click a file to swap the panel to its git diff (Esc / ‹ back, ↑↓ or j/k between files)
 - `mods/dendro-files-panel/`: Files panel with icons and folder colours; right-click for **New File** and **New Folder**
 - `mods/dendro-files-menu/`: the Files panel's right-click menu
-- `mods/dendro-tab-bar/`: tab bar with the Chat | Editor switch and the Terminal / Files / Changes buttons
+- `mods/dendro-tab-bar/`: tab bar with the Chat | Editor switch and the Terminal / Files / Changes buttons; a tab you haven't named shows its agent's session title, cut to 12 characters
 - `mods/dendro-editor/`: the Editor view: files opened from Files, as tabs; markdown opens rendered (Preview | Edit), and prose wraps
 - `mods/dendro-agents-panel/`: Agents list grouped into colour-coded folder boxes (the agent's git repo, else its folder); it also names a space after its first agent's folder, unless you named the space yourself; right-click an agent for a new session of the same kind in its folder
 - `mods/dendro-status-bar/`: the bottom status bar, plus your Claude plan limits (5-hour and weekly)
