@@ -2,7 +2,7 @@
 // save (Ctrl+S), a modified dot, and reload when the file changes on disk (an agent's edit).
 // Built on Herdr's own Editor (syntax highlighting, line numbers, folding).
 import { View, div, svg, image } from "gpui-kit";
-import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
+import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
 import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home } from "herdr";
 import { fileIcon } from "./icons.js";
 
@@ -13,6 +13,9 @@ const languageOf = (path) => {
   const ext = name.includes(".") ? name.split(".").pop() : name;
   return Object.prototype.hasOwnProperty.call(LANG, ext) ? LANG[ext] : ext;
 };
+// Markdown opens rendered (Preview), with Edit beside it; prose wraps instead of scrolling sideways.
+const isMarkdown = (path) => /\.(md|markdown|mdx)$/i.test(path);
+const isProse = (path) => isMarkdown(path) || /\.(txt|text|rst|adoc)$/i.test(path);
 const OPEN = "dendro.open", DIRTY = "dendro.editor.dirty";
 const showCenter = (child) => run("layout.select", { stack: "center", child });
 
@@ -34,12 +37,11 @@ export default class DendroEditor extends View {
   open(request, cx) {
     let d = this.doc(request.path);
     if (!d) {
-      d = { path: request.path, on: request.on ?? null, name: request.path.split(/[\\/]/).pop(), state: null, dirty: false };
+      d = { path: request.path, on: request.on ?? null, name: request.path.split(/[\\/]/).pop(), state: null, dirty: false, preview: isMarkdown(request.path) };
       this.docs.push(d);
       this.load(d, cx);
     }
-    this.active = d.path;
-    cx.notify();
+    this.active = d.path; // called while rendering: no cx.notify() here (load() redraws when the text arrives)
   }
 
   load(d, cx) {
@@ -59,7 +61,7 @@ export default class DendroEditor extends View {
     if (d.state) { d.state.set_value(text); return; }
     const t = theme();
     d.state = EditorState.new({
-      language: languageOf(d.path), value: text, readonly: Boolean(d.on),
+      language: languageOf(d.path), value: text, readonly: Boolean(d.on), soft_wrap: isProse(d.path),
       font_family: settings().font_family, font_size: 13,
       syntax: { keyword: t.ansi5, string: t.ansi2, comment: t.dim, function: t.ansi4, type: t.ansi3, number: t.ansi1, constant: t.ansi6, boolean: t.ansi6 },
     });
@@ -158,6 +160,13 @@ export default class DendroEditor extends View {
           .child(doc.dirty ? div().size(7).rounded(4).bg(doc.discard ? t.blocked : t.foreground) : svg("mods/dendro-editor/x.svg").size(12).text_color(t.dim)));
     };
 
+    const mode = (doc, preview, label) => {
+      const on = Boolean(doc.preview) === preview;
+      return div().id(`dendro-mode-${label}`).h(20).px(8).flex().items_center().rounded(4).text_size(11.5)
+        .bg(on ? t.raised : t.chrome).text_color(on ? t.foreground : t.muted).when(!on, (e) => e.cursor_pointer().hover((s) => s.text_color(t.foreground)))
+        .on_click((_e, cx) => { doc.preview = preview; cx.notify(); }).child(label);
+    };
+
     const button = (id, label, enabled, action, strong = false) => div().id(id).h(22).px(9).flex().items_center().rounded(5).text_size(11.5)
       .bg(enabled && strong ? t.solid : t.raised).text_color(enabled ? (strong ? t.solid_foreground : t.foreground) : t.dim)
       .when(enabled, (e) => e.cursor_pointer().on_click(action)).child(label);
@@ -175,6 +184,8 @@ export default class DendroEditor extends View {
         .child(div().flex_1().min_w(0).truncate().text_color(t.dim).child(pretty(d.path)))
         .when(Boolean(d.on), (e) => e.child(div().text_color(t.muted).child(`read-only · ${d.on}`)))
         .when(d.discard, (e) => e.child(div().text_color(t.blocked).child("Unsaved changes · × again to discard")))
+        .when(isMarkdown(d.path) && Boolean(d.state), (e) => e.child(h_flex().flex_none().p(1).gap(1).rounded(6).bg(t.chrome).border_1().border_color(t.border)
+          .child(mode(d, true, "Preview")).child(mode(d, false, "Edit"))))
         .child(div().text_color(t.dim).child(languageOf(d.path)))
         .when(!d.on, (e) => e.child(button("dendro-save", d.busy ? "Saving…" : "Save", (d.dirty || d.gone) && !d.busy, (_e, cx) => this.save(cx), true)))))
       .when(Boolean(d && (d.conflict || d.gone || d.note)), (el) => el.child(h_flex().flex_none().px(12).py(6).gap(8).items_center().bg(/^#[0-9a-f]{6}$/i.test(t.blocked) ? t.blocked + "22" : t.raised).text_size(12)
@@ -182,7 +193,10 @@ export default class DendroEditor extends View {
         .when(d.conflict && !d.gone, (e) => e
           .child(button("dendro-reload", "Reload (discard mine)", true, (_e, cx) => this.reload(cx)))
           .child(button("dendro-overwrite", "Keep mine & save", true, (_e, cx) => this.save(cx, true), true)))))
-      .child(d?.state ? Editor.new(d.state).flex_1().min_h(0)
+      .child(d?.state && d.preview
+        ? div().id(`dendro-md-${d.path}`).flex_1().min_h(0).min_w(0).overflow_y_scrollbar().px(28).py(18).text_size(14)
+          .child(TextView.markdown(`dendro-md-text-${d.path}`, d.state.value()).selectable(true))
+        : d?.state ? Editor.new(d.state).flex_1().min_h(0)
         : div().flex_1().flex().items_center().justify_center().text_color(t.dim)
           .child(d ? (d.error ?? "Opening…") : "Click a file in Files to open it here"));
   }

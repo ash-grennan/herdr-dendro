@@ -6,7 +6,7 @@ A [Herdr](https://herdr.dev) layout based on the default one, with **Changes** a
 - `mods/dendro-diff-panel/`: Changes panel; click a file to swap the panel to its git diff (Esc / ‹ back, ↑↓ or j/k between files)
 - `mods/dendro-files-panel/`: Files panel with icons and folder colours
 - `mods/dendro-tab-bar/`: tab bar with the Chat | Editor switch and the Terminal / Files / Changes buttons
-- `mods/dendro-editor/`: the Editor view: files opened from Files, as tabs
+- `mods/dendro-editor/`: the Editor view: files opened from Files, as tabs; markdown opens rendered (Preview | Edit), and prose wraps
 - `mods/dendro-agents-panel/`: Agents list grouped into colour-coded folder boxes (the agent's git repo, else its folder)
 
 Install: `./install.sh`, then pick **dendro** with `ctrl-shift-l`.
