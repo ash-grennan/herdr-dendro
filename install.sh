@@ -1,7 +1,6 @@
 #!/bin/sh
 # Copy this layout and its mods into Herdr's home (live-reloads on save).
 set -e
-command -v rsync >/dev/null || { echo "install.sh needs rsync" >&2; exit 1; }
 HOME_DIR="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 here="$(cd "$(dirname "$0")" && pwd)"
 mkdir -p "$HOME_DIR/layouts" "$HOME_DIR/mods"
@@ -17,43 +16,35 @@ done
 { echo "// Copy of mods/dendro-quick-open/fuzzy.js (synced by install.sh; edit that one)."; grep -v '^// Copy of' "$here/mods/dendro-quick-open/fuzzy.js"; } > "$here/mods/dendro-switcher/fuzzy.js"
 for m in "$here"/mods/*/; do
   name="$(basename "$m")"
-  [ -L "$HOME_DIR/mods/$name" ] && rm "$HOME_DIR/mods/$name"
-  rsync -a --delete --exclude jsconfig.json --exclude gpui-kit.d.ts --exclude "*.error" "$m" "$HOME_DIR/mods/$name/"
+  dest="$HOME_DIR/mods/$name"
+  # A fresh copy each time, so files a newer version dropped go too; editor files stay out.
+  if [ -L "$dest" ]; then rm "$dest"; else rm -rf "${dest:?}"; fi
+  cp -R "${m%/}" "$dest"
+  rm -f "$dest/jsconfig.json" "$dest/gpui-kit.d.ts" "$dest"/*.error
 done
 for f in "$here"/layouts/*; do
   dest="$HOME_DIR/layouts/$(basename "$f")"
   [ -L "$dest" ] && rm "$dest"
   cmp -s "$f" "$dest" 2>/dev/null || cp "$f" "$dest"
 done
-# Keys (keys.json): added to yours, never replacing a key you already use.
-if [ ! -f "$HOME_DIR/keys.json" ] || ! command -v python3 >/dev/null; then
-  echo "keys not added: copy the bindings in keys.json into $HOME_DIR/keys.json yourself"
+# Keys: dendro's section of keys.json goes at the top of yours, once. Only one section is added,
+# so it's text, not parsed JSON. Your own bindings still apply: a key in your "terminal" section
+# wins over a layout's (Herdr's rule), and a layout's keys only work while it shows.
+keys="$HOME_DIR/keys.json"
+if [ ! -f "$keys" ]; then
+  echo "keys not added: start Herdr once (it writes $keys), then run this again"
+elif grep -q '"layout:dendro"' "$keys"; then
+  echo "keys: your keys.json already has a layout:dendro section; left as it is"
 else
-  python3 - "$here/keys.json" "$HOME_DIR/keys.json" <<'PY'
-import json, sys
-ours, path = json.load(open(sys.argv[1])), sys.argv[2]
-with open(path) as f:
-    yours = json.load(f)
-changed = False
-for section, binds in ours.items():
-    mine = yours.setdefault(section, {})
-    # A layout's keys only apply while it shows, so they may take over a global key there.
-    layout = section.startswith("layout:")
-    for key, action in binds.items():
-        used = [s for s in ((section, "terminal") if layout else (section, "global", "terminal")) if key in yours.get(s, {})]
-        if mine.get(key) == action:
-            continue
-        if used:
-            print(f"keys: {key} left as it is ({used[0]} has it); bind {action} to another key in {path} if you want it")
-            continue
-        mine[key] = action
-        changed = True
-        instead = yours.get("global", {}).get(key) if layout else None
-        print(f"keys: {key} -> {action}" + (f" (instead of {instead} while {section[7:]} shows)" if instead else ""))
-if changed:
-    with open(path, "w") as f:
-        json.dump(yours, f, indent=2, ensure_ascii=False)
-        f.write("\n")
-PY
+  [ -f "$keys.before-dendro" ] || cp "$keys" "$keys.before-dendro"
+  BODY="$(sed '1d;$d' "$here/keys.json")" awk '
+    { s = s $0 "\n" }
+    END {
+      i = index(s, "{"); if (!i) exit 1
+      rest = substr(s, i + 1)
+      printf "%s\n%s%s%s", substr(s, 1, i), ENVIRON["BODY"], (rest ~ /^[ \t\r\n]*}/ ? "\n" : ","), rest
+    }' "$keys" > "$keys.dendro-tmp" && mv "$keys.dendro-tmp" "$keys" \
+    && echo "keys: added dendro's shortcuts to $keys (the old file is keys.json.before-dendro)" \
+    || { rm -f "$keys.dendro-tmp"; echo "keys not added: $keys isn't a JSON object; copy the bindings in keys.json into it yourself"; }
 fi
 echo "installed into $HOME_DIR"

@@ -43,7 +43,7 @@ Press `Ctrl+Space`, then:
 
 ## Install
 
-Needs Herdr 0.1.16, `rsync` and `python3`.
+Needs Herdr 0.1.16.
 
 ```sh
 ./install.sh
@@ -51,13 +51,13 @@ Needs Herdr 0.1.16, `rsync` and `python3`.
 
 Then press `Ctrl+Shift+L` and pick **dendro**. Run it again after pulling.
 
-It copies the layout and `dendro-*` mods into `~/.config/herdr-app` (or `$HERDR_APP_HOME`) and adds dendro's shortcuts to `keys.json`, skipping keys you already use. From then on Herdr treats `keys.json` as yours, so new default shortcuts in later Herdr versions must be added by hand.
+It copies the layout and `dendro-*` mods into `~/.config/herdr-app` (or `$HERDR_APP_HOME`) and adds dendro's shortcuts to `keys.json` (your old one is kept as `keys.json.before-dendro`). From then on Herdr treats `keys.json` as yours, so new default shortcuts in later Herdr versions must be added by hand.
 
 **Uninstall:** pick another layout, then delete `layouts/dendro.json` and `mods/dendro-*` from `~/.config/herdr-app`, and the `layout:dendro` section from its `keys.json`.
 
 ### Claude limits (optional)
 
-Add this to `~/.claude/settings.json` (it replaces any existing `statusLine`):
+Needs `python3`. Add this to `~/.claude/settings.json` (it replaces any existing `statusLine`):
 
 ```json
 "statusLine": { "type": "command", "command": "~/.config/herdr-app/mods/dendro-status-bar/claude-statusline.py" }
