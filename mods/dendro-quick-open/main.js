@@ -5,7 +5,7 @@
 // ↑/↓ move, Enter opens, Esc closes.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { spaces, panes, focused, exec, run, theme, props, closeOverlay, setShared, checking, window } from "herdr";
+import { spaces, panes, focused, exec, run, theme, props, closeOverlay, setShared, checking, window, home } from "herdr";
 import { fileIcon } from "./icons.js";
 // A file's icon: its glyph, tinted by its type.
 const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
@@ -171,6 +171,12 @@ export default class QuickOpen extends View {
       .child(h_flex().flex_none().gap(14).text_size(11).text_color(t.dim)
         .child("↑↓ move").child("Enter open").child("Esc close")
         .child(div().flex_1())
-        .child(div().max_w(280).truncate().child(this.root ?? "")));
+        .child(div().max_w(280).truncate().child(this.pretty(this.root ?? ""))));
+  }
+
+  // The folder in the footer: ~ for the home folder, as elsewhere (this computer only).
+  pretty(p) {
+    const h = home();
+    return !this.where?.on && h && (p === h || p.startsWith(h + "/")) ? "~" + p.slice(h.length) : p;
   }
 }

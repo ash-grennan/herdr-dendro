@@ -67,9 +67,23 @@ export default class Changes extends View {
     });
   }
 
+  // There's no blur event: while the panel has the keyboard, check now and then, and redraw
+  // once it's gone (Esc, a click elsewhere) so the cursor and accent go with it.
+  watchBlur(cx) {
+    if (this.watching) return;
+    this.watching = true;
+    const tick = (cx) => {
+      if (this.handle.is_focused()) return cx.timer.after(250, tick);
+      this.watching = false;
+      cx.notify();
+    };
+    cx.timer.after(250, tick);
+  }
+
   takeFocus(cx) {
     this.handle.focus();
-    cx.timer.after(150, () => this.handle.focus()); // a closing popup can take the keyboard back at first
+    // A closing popup or dialog can take the keyboard back at first (Herdr refocuses the last pane).
+    for (const ms of [150, 400]) cx.timer.after(ms, () => this.handle.focus());
     cx.notify();
   }
 
@@ -294,6 +308,7 @@ export default class Changes extends View {
     const ask = shared("dendro.focus");
     if (ask?.to === "changes" && ask.at > this.focusSeen) { this.focusSeen = ask.at; cx.timer.after(0, (cx) => this.takeFocus(cx)); }
     const keys = this.handle.is_focused();
+    if (keys) this.watchBlur(cx);
     if (!this.files.some((f) => f.path === this.cursor)) this.cursor = this.files[0]?.path ?? null;
 
     const root = v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(keys ? t.accent : t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)

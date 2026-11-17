@@ -1,6 +1,6 @@
 // Right-click menu for the Files panel (dendro-files-panel). Opened as a popup at the
 // pointer; each item hands a command back to the panel, which knows what was clicked.
-// ↑/↓ or j/k move, Enter runs, Esc closes.
+// ↑/↓ or j/k move, Enter runs, Esc closes (back to the tree, when opened from its keyboard).
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { run, props, closeOverlay, theme } from "herdr";
@@ -15,6 +15,7 @@ const ITEMS = [
 export default class FilesMenu extends View {
   init(_props, cx) {
     this.at = 0;
+    this.keyboard = Boolean(props()?.keyboard);
     this.handle = cx.focus_handle();
     this.handle.focus();
   }
@@ -22,8 +23,15 @@ export default class FilesMenu extends View {
   choose(i) {
     const it = ITEMS[i];
     if (!it) return;
+    this.chosen = true;
     closeOverlay(props()?.overlay);
     run(it[2]);
+  }
+
+  // Opened from the tree's keyboard and closed without a choice (Esc, a click beside it): the
+  // keyboard goes back to the tree. Herdr closes the popup itself on Esc, so this is where to do it.
+  close() {
+    if (this.keyboard && !this.chosen) run("dendro-files-panel.focus");
   }
 
   render() {

@@ -97,9 +97,23 @@ export default class Files extends View {
     });
   }
 
+  // There's no blur event: while the panel has the keyboard, check now and then, and redraw
+  // once it's gone (Esc, a click elsewhere) so the cursor and accent go with it.
+  watchBlur(cx) {
+    if (this.watching) return;
+    this.watching = true;
+    const tick = (cx) => {
+      if (this.handle.is_focused()) return cx.timer.after(250, tick);
+      this.watching = false;
+      cx.notify();
+    };
+    cx.timer.after(250, tick);
+  }
+
   takeFocus(cx) {
     this.handle.focus();
-    cx.timer.after(150, () => this.handle.focus()); // a closing popup can take the keyboard back at first
+    // A closing popup or dialog can take the keyboard back at first (Herdr refocuses the last pane).
+    for (const ms of [150, 400]) cx.timer.after(ms, () => this.handle.focus());
     cx.notify();
   }
 
@@ -109,7 +123,7 @@ export default class Files extends View {
     this.menuDir = dir;
     this.menuContext = this.context;
     this.menuKeyboard = keyboard;
-    openOverlay({ mod: "dendro-files-menu", kind: "popup", ...(keyboard ? {} : { at: "pointer" }), width: 180, height: 72 });
+    openOverlay({ mod: "dendro-files-menu", ...(keyboard ? { kind: "dialog" } : { kind: "popup", at: "pointer" }), width: 180, height: 72, props: { keyboard } });
   }
 
   // The tree's keys (listnav.js), plus Space: open a file and keep the keyboard here.
@@ -303,7 +317,7 @@ export default class Files extends View {
       const cur = this.keys && path === this.cursor;
       this.nav.push({ path, dir: entry.dir, parent: prefix, idx: out.length });
       out.push(h_flex().id(`file-${path}`).relative().when(editing, el => el.bg(t.selected)).h(26).flex_none().pl(8 + depth * INDENT).pr(8).gap(6).items_center().rounded(6).cursor_pointer().hover(s => s.bg(t.hover))
-        .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
+        .on_click((_e, cx) => { this.cursor = path; entry.dir ? this.toggle(path, cx) : this.show(path, cx); })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(entry.dir ? path : prefix); })
         .when(cur && !editing, el => el.bg(t.hover))
         .when(cur, el => el.child(div().absolute().left(0).top(5).bottom(5).w(2).rounded(1).bg(t.accent)))
@@ -326,6 +340,7 @@ export default class Files extends View {
     if (ask?.to === "files" && ask.at > this.focusSeen) { this.focusSeen = ask.at; cx.timer.after(0, (cx) => this.takeFocus(cx)); }
     // The cursor shows while the tree has the keyboard; it starts on the open file, else the top.
     this.keys = this.handle.is_focused();
+    if (this.keys) this.watchBlur(cx);
     this.nav = [];
     const rows = this.rows("", 0, [], t);
     if (!this.nav.some(n => n.path === this.cursor)) {

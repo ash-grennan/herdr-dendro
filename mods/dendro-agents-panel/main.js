@@ -172,9 +172,23 @@ export default class Agents extends View {
     });
   }
 
+  // There's no blur event: while the panel has the keyboard, check now and then, and redraw
+  // once it's gone (Esc, a click elsewhere) so the cursor and accent go with it.
+  watchBlur(cx) {
+    if (this.watching) return;
+    this.watching = true;
+    const tick = (cx) => {
+      if (this.handle.is_focused()) return cx.timer.after(250, tick);
+      this.watching = false;
+      cx.notify();
+    };
+    cx.timer.after(250, tick);
+  }
+
   takeFocus(cx) {
     this.handle.focus();
-    cx.timer.after(150, () => this.handle.focus()); // a closing popup can take the keyboard back at first
+    // A closing popup or dialog can take the keyboard back at first (Herdr refocuses the last pane).
+    for (const ms of [150, 400]) cx.timer.after(ms, () => this.handle.focus());
     cx.notify();
   }
 
@@ -391,7 +405,7 @@ export default class Agents extends View {
       const typed = terminals().find((x) => x.address === a.address)?.foreground?.argv?.[0];
       agent = { folder: cwd ?? null, machine: a.address.includes("/") ? a.address.split("/")[0] : null, key: p.key ?? null, name: p.name || a.app || "agent", icon: p.icon ?? null, tint: Boolean(p.tint), typed: typed ? [typed] : null };
     }
-    openOverlay({ mod: "dendro-agents-panel", kind: "popup", ...(keyboard ? {} : { at: "pointer" }), width: 250, height: 300, props: { menu: { space, agent } } });
+    openOverlay({ mod: "dendro-agents-panel", ...(keyboard ? { kind: "dialog" } : { kind: "popup", at: "pointer" }), width: 250, height: 300, props: { menu: { space, agent, keyboard } } });
   }
 
   // Right-click a project: open it, or start an agent in it (and rename or close the space open
@@ -400,7 +414,7 @@ export default class Agents extends View {
     const agentCount = (shared("new-menu.agents")?.[""] ?? []).filter((x) => x.installed !== false && x.run?.length).length || 2;
     const sp = project && spaces().find((s) => !s.machine && within(place(s, panes()), project.path));
     const height = 14 + 26 + 31 * (project ? 1 + agentCount + (sp ? 2 : 0) : 0) + (project ? 35 : 0) + 31 * 2;
-    openOverlay({ mod: "dendro-agents-panel", kind: "popup", ...(keyboard ? {} : { at: "pointer" }), width: 260, height: Math.min(440, height), props: { menu: { project, root } } });
+    openOverlay({ mod: "dendro-agents-panel", ...(keyboard ? { kind: "dialog" } : { kind: "popup", at: "pointer" }), width: 260, height: Math.min(440, height), props: { menu: { project, root, keyboard } } });
   }
 
   // Go to the space working in that folder, else make one there.
@@ -410,9 +424,16 @@ export default class Agents extends View {
     else run("space.new", { folder: path, machine: "" });
   }
 
+  // A menu opened from the list's keyboard and closed without a choice (Esc, a click beside it):
+  // the keyboard goes back to the list. Herdr closes the popup itself on Esc, so it's done here.
+  close() {
+    if (this.menuKeyboard && !this.chosen) run("dendro-agents-panel.focus");
+  }
+
   initMenu(cx) {
     const m = props().menu, a = m.agent;
     this.at = 0;
+    this.menuKeyboard = Boolean(m.keyboard);
     this.git = null;
     this.handle = cx.focus_handle();
     this.handle.focus();
@@ -489,6 +510,7 @@ export default class Agents extends View {
     const choose = (i) => {
       const it = list[i];
       if (!it || it.off) return;
+      this.chosen = true;
       closeOverlay(props().overlay);
       it.go();
     };
@@ -576,6 +598,7 @@ export default class Agents extends View {
     if (ask?.to === "agents" && ask.at > this.focusSeen) { this.focusSeen = ask.at; cx.timer.after(0, (cx) => this.takeFocus(cx)); }
     // Keyboard rows, by section (Projects are built before the rows above them), joined in order at the end.
     const keys = this.handle.is_focused();
+    if (keys) this.watchBlur(cx);
     const navAll = { groups: [], empty: [], projects: [] };
     let group = null;  // the box or section being built: an agent row's parent
     const nav = (part, id, acts) => { navAll[part].push({ id, top: null, ...acts }); return keys && this.cursor === id; };
