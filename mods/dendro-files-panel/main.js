@@ -1,8 +1,9 @@
 // Files with file-type icons and per-folder colours. Based on Herdr's shipped `files` mod.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input } from "gpui-base";
+import { v_flex, h_flex, InputState, Input, ScrollHandle } from "gpui-base";
 import { spaces, panes, focused, exec, watchFolder, theme, window, shared, setShared, run, openOverlay, nextCommand, writeTextFile } from "herdr";
 import { fileIcon, plainFolder } from "./icons.js";
+import { listKey } from "./listnav.js";
 // A file's icon: its glyph, tinted by its type.
 const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
 
@@ -79,21 +80,65 @@ export default class Files extends View {
     this.input.on("submit", (_e, cx) => this.create(cx));
     // Closing the menu can move the keyboard away at first; only a later blur on an empty name cancels.
     this.input.on("blur", (_e, cx) => { if (this.creating && Date.now() - this.creating.since > 800 && !this.input.value().trim()) this.cancelCreate(cx); });
+    // The keyboard (Ctrl+Space F, or Alt+H/L into the panel): a cursor over the tree's rows.
+    this.handle = cx.focus_handle();
+    this.scroll = ScrollHandle.new();
+    this.cursor = null;      // the path the cursor is on
+    this.nav = [];           // the rows on show, in order: { path, dir, parent, idx (child index in the tree) }
+    this.focusSeen = Date.now() - 2000; // a "dendro.focus" request just before this start still counts
     cx.spawn(async cx => {
       for (;;) {
         const c = await nextCommand();
         if (c === "new-file") this.startCreate(cx, "file");
         else if (c === "new-folder") this.startCreate(cx, "folder");
+        else if (c === "focus") this.takeFocus(cx);
         cx.notify();
       }
     });
   }
 
+  takeFocus(cx) {
+    this.handle.focus();
+    cx.timer.after(150, () => this.handle.focus()); // a closing popup can take the keyboard back at first
+    cx.notify();
+  }
+
   // Right-click: a folder row targets that folder, a file row its folder, empty space the root.
-  openMenu(dir) {
+  // From the keyboard (m, Shift+F10) the menu opens in the middle, and the tree gets the keyboard back after.
+  openMenu(dir, keyboard = false) {
     this.menuDir = dir;
     this.menuContext = this.context;
-    openOverlay({ mod: "dendro-files-menu", kind: "popup", at: "pointer", width: 180, height: 72 });
+    this.menuKeyboard = keyboard;
+    openOverlay({ mod: "dendro-files-menu", kind: "popup", ...(keyboard ? {} : { at: "pointer" }), width: 180, height: 72 });
+  }
+
+  // The tree's keys (listnav.js), plus Space: open a file and keep the keyboard here.
+  onKey(e, cx) {
+    if (this.creating) return;
+    const nav = this.nav, i = Math.max(0, nav.findIndex(n => n.path === this.cursor)), n = nav[i];
+    const move = (to) => { if (nav[to]) { this.cursor = nav[to].path; this.scroll.scroll_to_item(nav[to].idx); } };
+    const m = e.modifiers ?? {};
+    if (e.key === "space" && !m.control && !m.alt && !m.platform && !m.shift) {
+      cx.stop_propagation();
+      if (n) { this.cursor = n.path; n.dir ? this.toggle(n.path, cx) : this.show(n.path, cx); }
+      return;
+    }
+    const r = listKey(e, { at: i, count: nav.length, page: 12 });
+    if (!r) return;
+    cx.stop_propagation();
+    if ("at" in r) move(r.at);
+    else if (r.act === "leave") run("dendro-tab-bar.chat");
+    else if (!n) return;
+    else if (r.act === "open") {
+      this.cursor = n.path;
+      if (n.dir) this.toggle(n.path, cx);
+      else { this.show(n.path, cx); setShared("dendro.focus", { to: "editor", at: Date.now() }); }
+    }
+    // → / l: open a folder, or step into an open one; ← / h: close a folder, or go up to the parent.
+    else if (r.act === "unfold") { if (n.dir && !this.folders.has(n.path)) this.toggle(n.path, cx); else if (n.dir) move(i + 1); }
+    else if (r.act === "fold") { if (n.dir && this.folders.has(n.path)) this.toggle(n.path, cx); else if (n.parent) move(nav.findIndex(x => x.path === n.parent)); }
+    else if (r.act === "menu") { this.cursor = n.path; this.openMenu(n.dir ? n.path : n.parent, true); }
+    cx.notify();
   }
 
   startCreate(cx, kind) {
@@ -108,6 +153,7 @@ export default class Files extends View {
 
   cancelCreate(cx) {
     this.creating = null;
+    if (this.menuKeyboard) this.handle.focus();
     cx.notify();
   }
 
@@ -132,6 +178,7 @@ export default class Files extends View {
           if (r.code !== 0) throw new Error(r.stderr.trim() || "Couldn't create the file");
         } else await writeTextFile(full, "", null);
         if (this.creating === creating) this.creating = null;
+        if (this.menuKeyboard) this.handle.focus();
         if (!this.current(context)) return;
         await this.loadFolder(creating.dir, context).catch(() => {});
         if (creating.kind === "folder") { if (!this.folders.has(path)) this.toggle(path, cx); } // open it, ready for its first file
@@ -253,9 +300,13 @@ export default class Files extends View {
       const color = entry.dir ? folderColor(entry.name, t) : null;
       const icon = !entry.dir ? fileGlyph(entry.name, t, 16) : svg(plainFolder(open)).size(16).flex_none().text_color(color);
       const editing = !entry.dir && this.opened === `${this.root}/${path}`;
+      const cur = this.keys && path === this.cursor;
+      this.nav.push({ path, dir: entry.dir, parent: prefix, idx: out.length });
       out.push(h_flex().id(`file-${path}`).relative().when(editing, el => el.bg(t.selected)).h(26).flex_none().pl(8 + depth * INDENT).pr(8).gap(6).items_center().rounded(6).cursor_pointer().hover(s => s.bg(t.hover))
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(entry.dir ? path : prefix); })
+        .when(cur && !editing, el => el.bg(t.hover))
+        .when(cur, el => el.child(div().absolute().left(0).top(5).bottom(5).w(2).rounded(1).bg(t.accent)))
         .children(guides.map((c, i) => div().absolute().top(0).bottom(0).left(8 + i * INDENT + 5.5).w(1).bg(alpha(c, "66"))))
         .child(entry.dir ? svg(`mods/dendro-files-panel/chevron-${open ? "down" : "right"}.svg`).size(12).flex_none().text_color(open ? color : t.dim) : div().w(12).flex_none())
         .child(icon)
@@ -271,7 +322,18 @@ export default class Files extends View {
     const t = theme();
     const request = shared("dendro.open"); // the file the editor last opened in this space, for the row highlight
     this.opened = request && request.space === spaces().find(s => s.active)?.id ? request.path : null;
-    return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13)
+    const ask = shared("dendro.focus");
+    if (ask?.to === "files" && ask.at > this.focusSeen) { this.focusSeen = ask.at; cx.timer.after(0, (cx) => this.takeFocus(cx)); }
+    // The cursor shows while the tree has the keyboard; it starts on the open file, else the top.
+    this.keys = this.handle.is_focused();
+    this.nav = [];
+    const rows = this.rows("", 0, [], t);
+    if (!this.nav.some(n => n.path === this.cursor)) {
+      const open = this.opened && this.root && this.opened.startsWith(this.root + "/") ? this.opened.slice(this.root.length + 1) : null;
+      this.cursor = (this.nav.find(n => n.path === open) ?? this.nav[0])?.path ?? null;
+    }
+    return v_flex().id("files").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(this.keys ? t.accent : t.border).text_color(t.foreground).text_size(13)
+      .track_focus(this.handle).on_key_down((e, cx) => this.onKey(e, cx))
       .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
         .child(div().font_semibold().child("Files"))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.root?.split(/[\\/]/).pop() ?? ""))
@@ -279,9 +341,9 @@ export default class Files extends View {
           .hover((s) => s.bg(t.hover).text_color(t.foreground)).tooltip(`Go to file (${window()?.platform === "macos" ? "⌘P" : "Alt+P"})`)
           .on_click(() => run("mod.open", { name: "dendro-quick-open" }))
           .child(svg("mods/workspace-chrome/search.svg").size(14))))
-      .child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6)
+      .child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().track_scroll(this.scroll).p(6)
         .on_mouse_down("right", (_e, cx) => { if (this.root) this.openMenu(""); })
-        .children(this.rows("", 0, [], t))
+        .children(rows)
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total"))));
   }

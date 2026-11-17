@@ -1,7 +1,8 @@
 // Changes as a list; clicking a file swaps the panel to its diff. Based on Herdr's shipped `changes` mod.
 import { View, div, svg } from "gpui-kit";
-import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings } from "herdr";
+import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list, ScrollHandle } from "gpui-base";
+import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings, shared, run, nextCommand } from "herdr";
+import { listKey } from "./listnav.js";
 import { fileIcon } from "./icons.js";
 // A file's icon: its glyph, tinted by its type.
 const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
@@ -55,6 +56,35 @@ export default class Changes extends View {
     this.input.on("blur", (_e, cx) => { this.typing = false; cx.notify(); });
     this.refresh(cx);
     cx.timer.every(10000, (cx) => this.refresh(cx));
+    // The keyboard (Ctrl+Space G, or Alt+H/L into the panel): a cursor over the changed files.
+    this.scroll = ScrollHandle.new();
+    this.cursor = null;   // the path the cursor is on
+    this.focusSeen = Date.now() - 2000; // a "dendro.focus" request just before this start still counts
+    cx.spawn(async (cx) => {
+      for (;;) {
+        if ((await nextCommand()) === "focus") this.takeFocus(cx);
+      }
+    });
+  }
+
+  takeFocus(cx) {
+    this.handle.focus();
+    cx.timer.after(150, () => this.handle.focus()); // a closing popup can take the keyboard back at first
+    cx.notify();
+  }
+
+  // The file list's keys (listnav.js), plus c for the commit message. Enter or → / l opens a diff.
+  listKeys(e, cx) {
+    const files = this.files, i = Math.max(0, files.findIndex((f) => f.path === this.cursor));
+    const m = e.modifiers ?? {};
+    if (e.key === "c" && !m.control && !m.alt && !m.platform && !m.shift) { cx.stop_propagation(); this.input.focus(); return; }
+    const r = listKey(e, { at: i, count: files.length, page: 12 });
+    if (!r) return;
+    cx.stop_propagation();
+    if ("at" in r) { this.cursor = files[r.at]?.path ?? null; this.scroll.scroll_to_item(r.at); }
+    else if (r.act === "leave") run("dendro-tab-bar.chat");
+    else if ((r.act === "open" || r.act === "unfold") && files[i]) { this.cursor = files[i].path; this.pick(files[i].path, cx); }
+    cx.notify();
   }
 
   watch(root, cx) {
@@ -192,7 +222,7 @@ export default class Changes extends View {
   }
 
   // Back to the list.
-  back(cx) { this.stopLine(); this.open = null; this.setLines([]); this.note = null; cx.notify(); }
+  back(cx) { this.stopLine(); if (this.open) this.cursor = this.open; this.open = null; this.setLines([]); this.note = null; cx.notify(); }
 
   // Editing in place: click an added or unchanged line and it becomes a text field.
   // Enter (or clicking away) writes it to the file; Shift+Enter also adds a line below; Esc cancels.
@@ -261,8 +291,12 @@ export default class Changes extends View {
       .text_color(enabled ? t.muted : t.border).when(enabled, (e) => e.cursor_pointer().hover((s) => s.bg(t.hover).text_color(t.foreground)).on_click(action))
       .child(svg(icon).size(14));
     const index = file ? this.files.indexOf(file) : -1;
+    const ask = shared("dendro.focus");
+    if (ask?.to === "changes" && ask.at > this.focusSeen) { this.focusSeen = ask.at; cx.timer.after(0, (cx) => this.takeFocus(cx)); }
+    const keys = this.handle.is_focused();
+    if (!this.files.some((f) => f.path === this.cursor)) this.cursor = this.files[0]?.path ?? null;
 
-    const root = v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
+    const root = v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(keys ? t.accent : t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
         if (this.line) {
           if (e.key === "escape") { cx.stop_propagation(); this.stopLine(); cx.notify(); }
@@ -272,6 +306,8 @@ export default class Changes extends View {
         else if (e.key === "escape" && this.open) { cx.stop_propagation(); this.back(cx); }
         else if (this.open && !this.typing && (e.key === "up" || e.key === "k")) { cx.stop_propagation(); this.step(-1, cx); }
         else if (this.open && !this.typing && (e.key === "down" || e.key === "j")) { cx.stop_propagation(); this.step(1, cx); }
+        else if (this.open && !this.typing && (e.key === "left" || e.key === "h") && !e.modifiers?.control && !e.modifiers?.alt) { cx.stop_propagation(); this.back(cx); }
+        else if (!this.open && !this.typing) this.listKeys(e, cx);
       });
 
     if (this.open) {
@@ -305,10 +341,11 @@ export default class Changes extends View {
         .child(div().px(5).py(1).rounded(4).border_1().border_color(t.border).text_size(10).text_color(t.muted).child(`${this.files.length} files`))
         .child(div().flex_1()).children(counts(add, del)))
       .child(div().flex_1().min_h(0).relative()
-        .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6).children(this.files.map((f) => {
-          const parts = f.path.split("/"), name = parts.pop();
-          return h_flex().id(`change-${f.path}`).h(26).flex_none().px(8).gap(6).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
-            .on_click((_e, cx) => { this.handle.focus(); this.pick(f.path, cx); })
+        .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().track_scroll(this.scroll).p(6).children(this.files.map((f) => {
+          const parts = f.path.split("/"), name = parts.pop(), cur = keys && f.path === this.cursor;
+          return h_flex().id(`change-${f.path}`).relative().h(26).flex_none().px(8).gap(6).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
+            .when(cur, (e) => e.bg(t.hover).child(div().absolute().left(0).top(5).bottom(5).w(2).rounded(1).bg(t.accent)))
+            .on_click((_e, cx) => { this.handle.focus(); this.cursor = f.path; this.pick(f.path, cx); })
             .child(fileGlyph(name, t, 16))
             .child(h_flex().flex_1().min_w(0).gap(6).items_center()
               .child(div().flex_none().max_w(200).truncate().text_color(f.status === "D" ? t.muted : t.foreground).child(name))

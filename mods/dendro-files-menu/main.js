@@ -1,6 +1,6 @@
 // Right-click menu for the Files panel (dendro-files-panel). Opened as a popup at the
 // pointer; each item hands a command back to the panel, which knows what was clicked.
-// ↑/↓ move, Enter runs, Esc closes.
+// ↑/↓ or j/k move, Enter runs, Esc closes.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { run, props, closeOverlay, theme } from "herdr";
@@ -30,8 +30,8 @@ export default class FilesMenu extends View {
     const t = theme();
     return v_flex().id("files-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
       .on_key_down((e, cx) => {
-        if (e.key === "down") this.at = (this.at + 1) % ITEMS.length;
-        else if (e.key === "up") this.at = (this.at + ITEMS.length - 1) % ITEMS.length;
+        if (e.key === "down" || e.key === "j") this.at = (this.at + 1) % ITEMS.length;
+        else if (e.key === "up" || e.key === "k") this.at = (this.at + ITEMS.length - 1) % ITEMS.length;
         else if (e.key === "enter") this.choose(this.at);
         else if (e.key === "escape") closeOverlay(props()?.overlay);
         else return;

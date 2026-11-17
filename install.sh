@@ -9,6 +9,10 @@ mkdir -p "$HOME_DIR/layouts" "$HOME_DIR/mods"
 for m in dendro-diff-panel dendro-editor dendro-quick-open; do
   { echo "// Copy of mods/dendro-files-panel/icons.js (synced by install.sh; edit that one)."; grep -v '^// Copy of' "$here/mods/dendro-files-panel/icons.js"; } > "$here/mods/$m/icons.js"
 done
+# listnav.js (the panels' list keys) lives in dendro-files-panel; Changes and Agents carry a copy.
+for m in dendro-diff-panel dendro-agents-panel; do
+  { echo "// Copy of mods/dendro-files-panel/listnav.js (synced by install.sh; edit that one)."; grep -v '^// Copy of' "$here/mods/dendro-files-panel/listnav.js"; } > "$here/mods/$m/listnav.js"
+done
 # fuzzy.js (quick-open matching) lives in dendro-quick-open; the switcher carries a copy.
 { echo "// Copy of mods/dendro-quick-open/fuzzy.js (synced by install.sh; edit that one)."; grep -v '^// Copy of' "$here/mods/dendro-quick-open/fuzzy.js"; } > "$here/mods/dendro-switcher/fuzzy.js"
 for m in "$here"/mods/*/; do
@@ -33,8 +37,10 @@ with open(path) as f:
 changed = False
 for section, binds in ours.items():
     mine = yours.setdefault(section, {})
+    # A layout's keys only apply while it shows, so they may take over a global key there.
+    layout = section.startswith("layout:")
     for key, action in binds.items():
-        used = [s for s in (section, "global", "terminal") if key in yours.get(s, {})]
+        used = [s for s in ((section, "terminal") if layout else (section, "global", "terminal")) if key in yours.get(s, {})]
         if mine.get(key) == action:
             continue
         if used:
@@ -42,7 +48,8 @@ for section, binds in ours.items():
             continue
         mine[key] = action
         changed = True
-        print(f"keys: {key} -> {action}")
+        instead = yours.get("global", {}).get(key) if layout else None
+        print(f"keys: {key} -> {action}" + (f" (instead of {instead} while {section[7:]} shows)" if instead else ""))
 if changed:
     with open(path, "w") as f:
         json.dump(yours, f, indent=2, ensure_ascii=False)

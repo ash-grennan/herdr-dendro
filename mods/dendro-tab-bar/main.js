@@ -1,6 +1,6 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, ScrollHandle } from "gpui-base";
-import { spaces, panes, terminals, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, terminals, run, openOverlay, theme, window, shared, setShared, layout, settings, nextCommand } from "herdr";
 // The Terminal button's shell: one per tab, pinned above the chat, hidden (parked) rather than closed.
 const SHELL_SHARE = 0.1; // of the tab's height
 // ...but never so little that the shell has under 3 rows: zsh then draws its prompt in a one-line
@@ -42,6 +42,18 @@ const short = (s) => { const chars = [...s]; return chars.length > TAB_CHARS ? c
 // the colours and says which each tab gets (tab id -> a theme key).
 const alpha = (c, a) => /^#[0-9a-f]{6}$/i.test(c) ? c + a : c;
 
+// Back and forward (Alt+Left / Alt+Right): the places you've been, a place being a space, its tab
+// and the main area's view (Chat or Editor). Changes closer together than SETTLE_MS (a jump that
+// picks a space, then a tab, then Chat) make one step. TRAIL_MAX places are kept.
+const SETTLE_MS = 500, TRAIL_MAX = 50;
+const samePlace = (a, b) => Boolean(a && b) && a.space === b.space && a.tab === b.tab && a.view === b.view;
+const placeLives = (p) => spaces().some(s => s.id === p.space && (!p.tab || (s.tabs ?? []).some(x => x.id === p.tab)));
+function placeNow() {
+  const space = spaces().find(p => p.active);
+  if (!space) return null;
+  return { space: space.id, tab: (space.tabs ?? []).find(x => x.active)?.id ?? null, view: find(layout(), "center")?.active ?? "main" };
+}
+
 export default class Tabs extends View {
   init(_props, cx) {
     this.pressed = null;
@@ -53,9 +65,91 @@ export default class Tabs extends View {
     try { this.shells = JSON.parse(localStorage.getItem("shells") ?? "{}"); } catch { this.shells = {}; }
     try { this.autoDone = new Set(JSON.parse(localStorage.getItem("autoShell") ?? "[]")); } catch { this.autoDone = new Set(); }
     this.tabsSeen = new Set(); // every tab id at the last render, to notice one closing
+    this.trail = [];       // places, oldest first
+    this.at = -1;          // where in the trail you are
+    this.going = null;     // { to, until }: a back/forward still taking effect
+    this.noted = 0;        // when the last place was added (0: reached by back/forward)
+    cx.spawn(async (cx) => {
+      for (;;) {
+        this.act(await nextCommand());
+        cx.notify();
+      }
+    });
+  }
+
+  // What keys, the leader (dendro-leader) and the panels ask for: run("dendro-tab-bar.<command>").
+  // Showing a panel or the editor asks it to take the keyboard ("dendro.focus").
+  act(c) {
+    const ctl = this.ctl;
+    const focus = (to) => setShared("dendro.focus", { to, at: Date.now() });
+    if (c === "back") this.go(-1);
+    else if (c === "forward") this.go(1);
+    else if (c === "files" || c === "changes") { ctl?.showPanel(c); focus(c); }
+    else if (c === "agents") {
+      if (find(layout(), "sidebar")?.hidden) run("layout.show", { id: "sidebar" });
+      focus("agents");
+    }
+    else if (c === "view") {
+      const editor = (find(layout(), "center")?.active ?? "main") === "editor";
+      run("layout.select", { stack: "center", child: editor ? "main" : "editor" });
+      if (editor) this.toChat(); else focus("editor");
+    }
+    else if (c === "shell") ctl?.toggleShell();
+    else if (c === "chat") {
+      if (find(layout(), "center")?.active === "editor") run("layout.select", { stack: "center", child: "main" });
+      this.toChat();
+    }
+  }
+
+  // The keyboard back to the shown tab's chat: its agent's pane, else its focused or first terminal.
+  toChat() {
+    const tab = spaces().find(s => s.active)?.tabs?.find(x => x.active)?.id;
+    const mine = panes().filter(p => p.tab === tab && p.terminal);
+    const to = mine.find(p => p.program?.agent) ?? mine.find(p => p.focused) ?? mine[0];
+    if (to) run("pane.focus", { pane: to.pane });
+  }
+
+  // Called on every render: a place you've moved to joins the trail, dropping any forward places.
+  notePlace() {
+    const here = placeNow();
+    if (!here) return;
+    if (this.going) {
+      if (samePlace(here, this.going.to)) { this.going = null; return; }
+      if (Date.now() < this.going.until) return;
+      this.going = null;
+    }
+    if (samePlace(here, this.trail[this.at])) return;
+    const now = Date.now();
+    this.trail = this.trail.slice(0, this.at + 1);
+    if (this.noted && now - this.noted < SETTLE_MS && this.trail.length > 1) this.trail[this.trail.length - 1] = here;
+    else this.trail.push(here);
+    if (this.trail.length > TRAIL_MAX) this.trail.shift();
+    this.at = this.trail.length - 1;
+    this.noted = now;
+  }
+
+  // Back (-1) or forward (1), skipping places whose space or tab has closed.
+  go(dir) {
+    const kept = [];
+    let at = -1;
+    this.trail.forEach((p, i) => {
+      if (placeLives(p) && !samePlace(p, kept[kept.length - 1])) kept.push(p);
+      if (i <= this.at) at = kept.length - 1;
+    });
+    this.trail = kept;
+    const i = at + dir, to = kept[i];
+    this.at = at;
+    if (!to) return;
+    this.at = i;
+    this.noted = 0;
+    this.going = { to, until: Date.now() + 1500 };
+    if (spaces().find(p => p.active)?.id !== to.space) run("space.select", { id: to.space });
+    if (to.tab) run("tab.select", { id: to.tab });
+    if ((find(layout(), "center")?.active ?? "main") !== to.view) run("layout.select", { stack: "center", child: to.view });
   }
 
   render() {
+    this.notePlace();
     const t = theme();
     const space = spaces().find(p => p.active);
     const shown = space?.tabs ?? [];
@@ -67,6 +161,7 @@ export default class Tabs extends View {
       if (active >= 0) this.scroll.scroll_to_item(active);
     }
     const stop = (_e, cx) => cx.stop_propagation();
+    const leader = "Ctrl+Space"; // the leader key (keys.json), shown in the buttons' tooltips
     const button = (id, label, action) => div().id(id).size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
     const tabColors = shared("dendro.agents.tabColors") ?? {};
@@ -186,23 +281,27 @@ export default class Tabs extends View {
     }
     const shellButton = h_flex().id("panel-terminal").h(26).px(8).gap(5).flex_none().items_center().rounded(6)
       .text_size(12).bg(shellShown ? t.selected : t.chrome).text_color(shellShown ? t.foreground : t.muted)
-      .hover(s => s.bg(t.hover)).on_mouse_down("left", stop).on_click(toggleShell)
+      .hover(s => s.bg(t.hover)).on_mouse_down("left", stop).on_click(toggleShell).tooltip(`Terminal (${leader} T)`)
       .child(svg("mods/dendro-tab-bar/terminal.svg").size(14)).child("Terminal");
+    // Shows Files or Changes; with the column hidden, only that one.
+    const showPanel = (id) => {
+      if (isOn(id)) return;
+      if (panel?.hidden) run("layout.hide", { id: id === "files" ? "changes" : "files" });
+      run("layout.show", { id });
+      run("layout.show", { id: "panel" });
+    };
+    this.ctl = { toggleShell: tabId ? toggleShell : () => {}, showPanel };
     const panelButton = (id, label, icon) => {
       const on = isOn(id);
       return h_flex().id(`panel-${id}`).h(26).px(8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
-        .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
+        .hover(s => s.bg(t.hover)).on_mouse_down("left", stop).tooltip(`${label} (${leader} ${id === "files" ? "F" : "G"})`)
         .on_click(() => {
           const other = id === "files" ? "changes" : "files";
           if (on) {
             run("layout.hide", { id });
             if (!isOn(other)) run("layout.hide", { id: "panel" });
-          } else {
-            if (panel?.hidden) run("layout.hide", { id: other });
-            run("layout.show", { id });
-            run("layout.show", { id: "panel" });
-          }
+          } else showPanel(id);
         }).child(svg(icon).size(14)).child(label);
     };
     // Chat | Editor: which view the main area shows (the "center" stack).
@@ -212,6 +311,7 @@ export default class Tabs extends View {
       return h_flex().id(`view-${child}`).h(24).px(10).gap(6).items_center().rounded(5).text_size(12)
         .bg(on ? t.raised : t.chrome).text_color(on ? t.foreground : t.muted).when(!on, e => e.cursor_pointer().hover(s => s.text_color(t.foreground)))
         .on_mouse_down("left", stop).on_click(() => run("layout.select", { stack: "center", child }))
+        .when(!on, e => e.tooltip(`${label} (${leader} E)`))
         .child(label)
         .when(child === "editor" && dirty > 0, e => e.child(div().size(6).rounded(3).bg(t.blocked)));
     };

@@ -3,7 +3,7 @@
 // Built on Herdr's own Editor (syntax highlighting, line numbers, folding).
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
-import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home, spaces, window } from "herdr";
+import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home, spaces, window, nextCommand } from "herdr";
 import { fileIcon } from "./icons.js";
 // A file's icon: its glyph, tinted by its type.
 const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
@@ -31,6 +31,23 @@ export default class DendroEditor extends View {
     this.handle = cx.focus_handle();
     if (shared(DIRTY)) setShared(DIRTY, null); // left over from a run that ended with unsaved edits
     cx.timer.every(2000, (cx) => this.poll(cx));
+    // The keyboard: given by Ctrl+Space E, Enter on a file in Files, or Alt+H/J/K/L onto the editor.
+    this.focusSeen = Date.now() - 2000; // a "dendro.focus" request just before this start still counts
+    cx.spawn(async (cx) => {
+      for (;;) {
+        if ((await nextCommand()) === "focus") this.takeFocus(cx);
+      }
+    });
+  }
+
+  // Into the text when there is some to edit, else the editor itself (Esc then goes back to the chat).
+  // Again a little later: the file may still be loading, or a closing popup may take the keyboard back.
+  takeFocus(cx) {
+    const give = () => { const d = this.doc(); if (d?.state && !d.preview) d.state.focus(); else this.handle.focus(); };
+    give();
+    cx.timer.after(150, give);
+    cx.timer.after(400, give);
+    cx.notify();
   }
 
   // Layout switched or app quitting: nothing is open any more.
@@ -158,6 +175,8 @@ export default class DendroEditor extends View {
   render(cx) {
     const request = shared(OPEN);
     if (request?.at && request.at !== this.seen) { this.seen = request.at; if (request.space) this.open(request, cx); }
+    const ask = shared("dendro.focus");
+    if (ask?.to === "editor" && ask.at > this.focusSeen) { this.focusSeen = ask.at; cx.timer.after(0, (cx) => this.takeFocus(cx)); }
     const t = theme(), d = this.doc(), h = home();
     const pretty = (p) => h && p.startsWith(h + "/") ? "~" + p.slice(h.length) : p;
     const stop = (_e, cx) => cx.stop_propagation();
@@ -193,6 +212,8 @@ export default class DendroEditor extends View {
         const mod = e.modifiers.control || e.modifiers.platform;
         if (mod && e.key === "s") { cx.stop_propagation(); this.save(cx); }
         else if (mod && e.key === "w" && this.active) { cx.stop_propagation(); this.closeDoc(this.active, cx); }
+        // Esc only reaches here outside the text (a Markdown preview, no file): back to the chat.
+        else if (e.key === "escape" && !(d?.state && !d.preview)) { cx.stop_propagation(); run("dendro-tab-bar.chat"); }
       })
       .child(h_flex().id("dendro-editor-tabs").h(40).flex_none().px(6).gap(4).items_center().bg(t.chrome).border_b(1).border_color(t.border).overflow_x_scrollbar()
         .children(this.shown().map(tab)))

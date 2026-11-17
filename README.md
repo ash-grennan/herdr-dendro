@@ -40,36 +40,57 @@ A [Herdr](https://herdr.dev) layout for working with several coding agents at on
 **Status bar**
 - Machine, branch and agent count, plus your Claude plan limits (5-hour and weekly; optional setup below)
 
-## Keyboard shortcuts
+## Keyboard
 
-Shortcuts added by this layout (only while dendro is showing; macOS in brackets):
+Everything in dendro can be reached from the keyboard. Shortcuts apply only while dendro is showing (macOS in brackets).
+
+**Leader: `Ctrl+Space`, then one key.** A popup lists the keys; `Esc` closes it.
+
+| Key | Does | | Key | Does |
+|---|---|---|---|---|
+| `a` | Agents (sidebar) | | `p` | Quick open a file |
+| `f` | Files | | `o` | Switch project |
+| `g` | Changes | | `[` `]` | Back / forward |
+| `c` | Chat | | `n` | New tab |
+| `e` | Chat ⇄ Editor | | `b` | Sidebar |
+| `t` | Terminal strip | | `,` `?` | Settings, all keys |
+
+`a`, `f`, `g` and `e` give that panel the keyboard, showing it first if it's hidden. `Ctrl+Space` is taken from terminals while dendro shows; it's the NUL character in a shell, which few programs use.
+
+**Direct keys** for the most frequent jumps:
 
 | Keys | Does |
 |---|---|
 | `Alt+P` (`⌘P`) | Quick open a file |
 | `Alt+O` (`⌘O`) | Switch to a project or session |
+| `Alt+←` `Alt+→` | Back / forward through the places you've been (space, tab, Chat or Editor) |
 
-In the popups:
+`Alt+←` `Alt+→` move between panes elsewhere in Herdr; in dendro, `Alt+H` `Alt+L` still do, and they also step into the Agents, Files and Changes panels.
+
+**In a panel** (Agents, Files, Changes), the same keys everywhere. An accent bar marks the row you're on:
 
 | Keys | Does |
 |---|---|
-| `↑` `↓` / `Ctrl+N` `Ctrl+P` | Move |
+| `↑` `↓` or `j` `k` | Move |
+| `Home` `End` or `g` `G` | First / last |
+| `Page Up` `Page Down` | Move a page |
+| `→` or `l` | Unfold (a folder, box or section), or step into it |
+| `←` or `h` | Fold, or go up to the parent |
+| `Enter` | Open: an agent's chat, a space, a project, a file (in the editor), a change's diff |
+| `m` or `Shift+F10` | The row's right-click menu |
+| `Esc` | Back to the chat |
+
+Files: `Space` opens a file and keeps the keyboard in Files. Changes: `c` goes to the commit message; in a diff, `j` `k` move between files, and `h` or `Esc` goes back to the list.
+
+**Elsewhere:**
+
+| Keys | Does |
+|---|---|
+| `↑` `↓` / `Ctrl+N` `Ctrl+P` | Popups: move (`j` `k` too in right-click menus) |
 | `Alt+↑` `Alt+↓` | Switcher: jump between projects, skipping sessions |
-| `Page Up` `Page Down` | Quick open: move a page |
-| `Enter` | Open / go |
-| `Esc` | Close |
-
-In the panels:
-
-| Keys | Does |
-|---|---|
-| `Ctrl+S` (`⌘S`) | Editor: save |
-| `Ctrl+W` (`⌘W`) | Editor: close the tab |
-| `↑` `↓` or `j` `k` | Changes: previous / next file while a diff is open |
-| `Esc` | Changes: back to the file list |
-| `Enter` | Changes: save the line you're editing |
-| `Shift+Enter` | Changes: save the line and add one below |
-| `↑` `↓` `Enter` `Esc` | Right-click menus |
+| `Ctrl+S` (`⌘S`) / `Ctrl+W` (`⌘W`) | Editor: save / close the tab |
+| `Esc` | Editor: back to the chat (from a Markdown preview or an empty editor) |
+| `Enter` / `Shift+Enter` | Changes: save the line you're editing / and add one below |
 
 Herdr's own shortcuts still apply, for example `Ctrl+Shift+L` to switch layout and `Ctrl+Shift+P` for the command palette.
 
@@ -84,7 +105,7 @@ Needs Herdr 0.1.16 and `rsync`.
 Then press `Ctrl+Shift+L` and pick **dendro**.
 
 - Copies the layout and the `dendro-*` mods into `~/.config/herdr-app` (or `$HERDR_APP_HOME`), replacing any installed copies; run it again after pulling.
-- Adds the shortcuts above to your `~/.config/herdr-app/keys.json` (needs `python3`), skipping any key you already use. Herdr then treats the keys file as yours, so new default shortcuts in later Herdr versions have to be added by hand.
+- Adds the shortcuts above to your `~/.config/herdr-app/keys.json` (needs `python3`), skipping any key you already use in dendro or in terminals (a key Herdr binds everywhere, such as `Alt+←`, does the dendro thing only while dendro shows). Herdr then treats the keys file as yours, so new default shortcuts in later Herdr versions have to be added by hand.
 - Uses icons and popups from Herdr's own mods, so a later Herdr that renames those can break it.
 
 **Uninstall:** pick another layout, delete `layouts/dendro.json` and the `mods/dendro-*` folders from `~/.config/herdr-app`, and remove the `layout:dendro` section from its `keys.json`.

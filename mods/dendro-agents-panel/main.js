@@ -4,8 +4,9 @@
 // space you're in is marked, and right-click gives a space's menu (rename, worktrees, close).
 
 import { View, div, image, svg } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, home, knownAgents, pickFolder, checking } from "herdr";
+import { v_flex, h_flex, ScrollHandle } from "gpui-base";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, exec, home, knownAgents, pickFolder, checking, nextCommand } from "herdr";
+import { listKey } from "./listnav.js";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -158,6 +159,41 @@ export default class Agents extends View {
     this.scanning = new Set();
     this.moreShown = new Set();    // roots showing all their projects, not the first few
     cx.timer.every(30000, (cx) => cx.notify());
+    // The keyboard (Ctrl+Space A, or Alt+H into the sidebar): a cursor over the rows.
+    this.handle = cx.focus_handle();
+    this.scroll = ScrollHandle.new();
+    this.cursor = null;   // the id of the row the cursor is on
+    this.nav = [];        // the rows on show, in order: { id, top (index in the list), open, menu?, fold?, unfold?, parent? }
+    this.focusSeen = Date.now() - 2000; // a "dendro.focus" request just before this start still counts
+    cx.spawn(async (cx) => {
+      for (;;) {
+        if ((await nextCommand()) === "focus") this.takeFocus(cx);
+      }
+    });
+  }
+
+  takeFocus(cx) {
+    this.handle.focus();
+    cx.timer.after(150, () => this.handle.focus()); // a closing popup can take the keyboard back at first
+    cx.notify();
+  }
+
+  // The list's keys (listnav.js). fold/unfold say whether they did anything: if not, ← / h goes
+  // to the row's parent (its box or section) and → / l to the next row.
+  onKey(e, cx) {
+    const nav = this.nav, i = Math.max(0, nav.findIndex((n) => n.id === this.cursor)), n = nav[i];
+    const move = (to) => { if (nav[to]) { this.cursor = nav[to].id; this.scroll.scroll_to_item(nav[to].top); } };
+    const r = listKey(e, { at: i, count: nav.length, page: 10 });
+    if (!r) return;
+    cx.stop_propagation();
+    if ("at" in r) move(r.at);
+    else if (r.act === "leave") run("dendro-tab-bar.chat");
+    else if (!n) return;
+    else if (r.act === "open") n.open?.();
+    else if (r.act === "menu") n.menu?.();
+    else if (r.act === "unfold") { if (!n.unfold?.()) move(i + 1); }
+    else if (r.act === "fold") { if (!n.fold?.() && n.parent) move(nav.findIndex((x) => x.id === n.parent)); }
+    cx.notify();
   }
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
@@ -347,7 +383,7 @@ export default class Agents extends View {
 
   // Right-click: a popup (this mod again, with props.menu) for a space, and for an agent when one
   // was clicked: another session of the same agent, in the same folder, as a new tab in its space.
-  openMenu(space, a, cwd) {
+  openMenu(space, a, cwd, keyboard = false) {
     let agent = null;
     if (a) {
       const p = a.program ?? {};
@@ -355,16 +391,16 @@ export default class Agents extends View {
       const typed = terminals().find((x) => x.address === a.address)?.foreground?.argv?.[0];
       agent = { folder: cwd ?? null, machine: a.address.includes("/") ? a.address.split("/")[0] : null, key: p.key ?? null, name: p.name || a.app || "agent", icon: p.icon ?? null, tint: Boolean(p.tint), typed: typed ? [typed] : null };
     }
-    openOverlay({ mod: "dendro-agents-panel", kind: "popup", at: "pointer", width: 250, height: 300, props: { menu: { space, agent } } });
+    openOverlay({ mod: "dendro-agents-panel", kind: "popup", ...(keyboard ? {} : { at: "pointer" }), width: 250, height: 300, props: { menu: { space, agent } } });
   }
 
   // Right-click a project: open it, or start an agent in it (and rename or close the space open
   // there, which has no other row); a folder's header: rescan or remove it.
-  openProjectMenu(project, root) {
+  openProjectMenu(project, root, keyboard = false) {
     const agentCount = (shared("new-menu.agents")?.[""] ?? []).filter((x) => x.installed !== false && x.run?.length).length || 2;
     const sp = project && spaces().find((s) => !s.machine && within(place(s, panes()), project.path));
     const height = 14 + 26 + 31 * (project ? 1 + agentCount + (sp ? 2 : 0) : 0) + (project ? 35 : 0) + 31 * 2;
-    openOverlay({ mod: "dendro-agents-panel", kind: "popup", at: "pointer", width: 260, height: Math.min(440, height), props: { menu: { project, root } } });
+    openOverlay({ mod: "dendro-agents-panel", kind: "popup", ...(keyboard ? {} : { at: "pointer" }), width: 260, height: Math.min(440, height), props: { menu: { project, root } } });
   }
 
   // Go to the space working in that folder, else make one there.
@@ -458,8 +494,8 @@ export default class Agents extends View {
     };
     return v_flex().id("agent-menu").track_focus(this.handle).w_full().min_h(0).p(5).bg(t.popover).text_size(12.8)
       .on_key_down((e, cx) => {
-        if (e.key === "down") this.at = (this.at + 1) % list.length;
-        else if (e.key === "up") this.at = (this.at + list.length - 1) % list.length;
+        if (e.key === "down" || e.key === "j") this.at = (this.at + 1) % list.length;
+        else if (e.key === "up" || e.key === "k") this.at = (this.at + list.length - 1) % list.length;
         else if (e.key === "enter") choose(this.at);
         else if (e.key === "escape") closeOverlay(props().overlay);
         else return;
@@ -536,6 +572,14 @@ export default class Agents extends View {
     if (props()?.menu) return this.menu(t);
     const collapsed = narrow();
     const sort = sortOf();
+    const ask = shared("dendro.focus");
+    if (ask?.to === "agents" && ask.at > this.focusSeen) { this.focusSeen = ask.at; cx.timer.after(0, (cx) => this.takeFocus(cx)); }
+    // Keyboard rows, by section (Projects are built before the rows above them), joined in order at the end.
+    const keys = this.handle.is_focused();
+    const navAll = { groups: [], empty: [], projects: [] };
+    let group = null;  // the box or section being built: an agent row's parent
+    const nav = (part, id, acts) => { navAll[part].push({ id, top: null, ...acts }); return keys && this.cursor === id; };
+    const cursorBar = (el, on, bg = true) => el.when(on, (e) => e.relative().when(bg, (e) => e.bg(t.hover)).child(div().absolute().left(0).top(6).bottom(6).w(2).rounded(1).bg(t.accent)));
     let list = agents();
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
@@ -665,8 +709,20 @@ export default class Agents extends View {
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
+      const toggleKids = () => {
+        if (!subs.length) return false;
+        this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
+        return true;
+      };
+      const cur = nav("groups", `ag-${a.address}`, {
+        parent: group,
+        open: () => run("pane.focus", { pane: a.pane }),
+        menu: () => this.openMenu(a.space, a, cwdOf.get(a.pane) || termCwd.get(a.address), true),
+        fold: () => subs.length > 0 && !this.folded.has(a.address) && toggleKids(),
+        unfold: () => subs.length > 0 && this.folded.has(a.address) && toggleKids(),
+      });
       if (collapsed) {
-        return h_flex()
+        return cursorBar(h_flex(), cur)
           .id(`ag-${a.address}`)
           .h(26)
           .px(8)
@@ -702,7 +758,7 @@ export default class Agents extends View {
       // Without a space header above (priority, pinned) the row names its space.
       const full = byPriority || isPinned;
       const name = full ? a.space_name || label(a) : more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-      return h_flex()
+      return cursorBar(h_flex(), cur, !a.focused)
         .id(`ag-${a.address}`)
         .px(8)
         .h(30)
@@ -753,7 +809,14 @@ export default class Agents extends View {
     const header = (g) => {
       const open = !this.folded.has(g.id);
       const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);
-      return h_flex()
+      group = g.id;
+      const cur = nav("groups", g.id, {
+        open: () => { open ? this.folded.add(g.id) : this.folded.delete(g.id); },
+        menu: g.space ? () => this.openMenu(g.space, null, null, true) : null,
+        fold: () => open && Boolean(this.folded.add(g.id)),
+        unfold: () => !open && this.folded.delete(g.id),
+      });
+      return cursorBar(h_flex(), cur, false)
         .id(g.id)
         .px(8)
         .pt(8)
@@ -786,10 +849,17 @@ export default class Agents extends View {
       const parent = pretty(g.folder).replace(/[\\/][^\\/]*$/, "");
       // A box can hold agents of more than one space: its menu is for the one you're in, else its first agent's.
       const mine = g.members.some((a) => a.space === here), space = mine ? here : g.members[0].space;
+      group = g.id;
+      const cur = nav("groups", g.id, {
+        open: () => { open ? this.folded.add(g.id) : this.folded.delete(g.id); },
+        menu: () => this.openMenu(space, null, null, true),
+        fold: () => open && Boolean(this.folded.add(g.id)),
+        unfold: () => !open && this.folded.delete(g.id),
+      });
       return v_flex().id(`box-${g.id}`).flex_none().mb(6).p(3).rounded(10)
         .bg(alpha(color, mine ? "1c" : "0f")).border_1().border_color(alpha(color, mine ? "99" : "38"))
-        .child(h_flex().id(g.id).h(28).px(6).gap(7).flex_none().items_center().rounded(7).cursor_pointer()
-          .hover((s) => s.bg(alpha(color, "1a")))
+        .child(cursorBar(h_flex(), cur, false).id(g.id).h(28).px(6).gap(7).flex_none().items_center().rounded(7).cursor_pointer()
+          .hover((s) => s.bg(alpha(color, "1a"))).when(cur, (e) => e.bg(alpha(color, "1a")))
           .on_click((_e, cx) => { open ? this.folded.add(g.id) : this.folded.delete(g.id); cx.notify(); })
           .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(space); })
           .child(svg(`mods/dendro-agents-panel/folder${open ? "-open" : ""}.svg`).size(14).flex_none().text_color(color))
@@ -805,7 +875,8 @@ export default class Agents extends View {
     const placeOf = new Map(allSpaces.map((sp) => [sp.id, place(sp, allPanes)]));   // once each, not per row
     const spaceRow = (sp) => {
       const folder = place(sp, allPanes) || "";
-      return h_flex().id(`space-${sp.id}`).h(30).px(9).gap(7).flex_none().rounded(8).items_center().cursor_pointer()
+      const cur = nav("empty", `space-${sp.id}`, { open: () => run("space.select", { id: sp.id }), menu: () => this.openMenu(sp.id, null, null, true) });
+      return cursorBar(h_flex(), cur, !sp.active).id(`space-${sp.id}`).h(30).px(9).gap(7).flex_none().rounded(8).items_center().cursor_pointer()
         .when(sp.active, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
         .on_click(() => run("space.select", { id: sp.id }))
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(sp.id); })
@@ -815,7 +886,7 @@ export default class Agents extends View {
         .when(Boolean(sp.machine), (el) => el.child(div().flex_none().text_size(10).text_color(t.dim).child(sp.machine)));
     };
     // On the narrow rail: a folder icon each, named in its tooltip.
-    const railSpace = (sp) => h_flex().id(`space-${sp.id}`).h(26).flex_none().items_center().justify_center()
+    const railSpace = (sp) => cursorBar(h_flex(), nav("empty", `space-${sp.id}`, { open: () => run("space.select", { id: sp.id }), menu: () => this.openMenu(sp.id, null, null, true) }), !sp.active).id(`space-${sp.id}`).h(26).flex_none().items_center().justify_center()
       .when(sp.active, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
       .on_click(() => run("space.select", { id: sp.id }))
       .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openMenu(sp.id); })
@@ -828,7 +899,8 @@ export default class Agents extends View {
     const note = (text) => div().px(9).py(4).flex_none().text_size(11.5).text_color(t.dim).child(text);
     const projectRow = (p, root) => {
       const sp = spaceIn(p.path), color = t[colorKey.get(p.path)] ?? folderColor(p.name, t);
-      return h_flex().id(`proj-${p.path}`).h(28).px(9).gap(7).flex_none().rounded(8).items_center().cursor_pointer()
+      const cur = nav("projects", `proj-${p.path}`, { parent: `proj-${root}`, open: () => this.openProject(p.path), menu: () => this.openProjectMenu({ path: p.path, name: p.name }, root, true) });
+      return cursorBar(h_flex(), cur, !sp?.active).id(`proj-${p.path}`).h(28).px(9).gap(7).flex_none().rounded(8).items_center().cursor_pointer()
         .when(Boolean(sp?.active), (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
         .on_click(() => this.openProject(p.path))
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openProjectMenu({ path: p.path, name: p.name }, root); })
@@ -842,7 +914,12 @@ export default class Agents extends View {
       const key = `proj-${root}`, open = !this.folded.has(key), more = this.moreShown.has(root);
       const onShow = open ? (more ? all : all.slice(0, PROJECTS_SHOWN)) : [];
       listed.push(...onShow.map((p) => p.path));
-      const head = h_flex().id(key).px(8).pt(10).h(32).flex_none().gap(6).items_center().text_size(11).font_medium().text_color(t.dim).cursor_pointer()
+      const head = () => cursorBar(h_flex(), nav("projects", key, {
+        open: () => { open ? this.folded.add(key) : this.folded.delete(key); },
+        menu: () => this.openProjectMenu(null, root, true),
+        fold: () => open && Boolean(this.folded.add(key)),
+        unfold: () => !open && this.folded.delete(key),
+      }), false).id(key).px(8).pt(10).h(32).flex_none().gap(6).items_center().text_size(11).font_medium().text_color(t.dim).cursor_pointer()
         .hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => { open ? this.folded.add(key) : this.folded.delete(key); cx.notify(); })
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); this.openProjectMenu(null, root); })
@@ -851,27 +928,44 @@ export default class Agents extends View {
         .child(div().flex_none().child(got ? String(all.length) : "\u2026"))
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none());
       if (!open) return [head];
-      const rows = onShow.map((p) => projectRow(p, root));
-      if (got?.error) rows.push(note(got.error));
-      else if (got && !all.length) rows.push(note(got.list.length ? "Each repo here has agents above" : "No git repos directly in this folder"));
-      if (all.length > PROJECTS_SHOWN) rows.push(div().id(`proj-more-${root}`).px(9).h(24).flex_none().flex().items_center().text_size(11.5).text_color(t.dim)
+      const rows = onShow.map((p) => () => projectRow(p, root));
+      if (got?.error) rows.push(() => note(got.error));
+      else if (got && !all.length) rows.push(() => note(got.list.length ? "Each repo here has agents above" : "No git repos directly in this folder"));
+      if (all.length > PROJECTS_SHOWN) rows.push(() => cursorBar(div(), nav("projects", `proj-more-${root}`, { parent: key, open: () => { more ? this.moreShown.delete(root) : this.moreShown.add(root); } })).id(`proj-more-${root}`).px(9).h(24).flex_none().flex().items_center().text_size(11.5).text_color(t.dim)
         .cursor_pointer().hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => { more ? this.moreShown.delete(root) : this.moreShown.add(root); cx.notify(); })
         .child(more ? "Show fewer" : `${all.length - PROJECTS_SHOWN} more`));
       return [head, ...rows];
     });
     const empty = allSpaces.filter((sp) => !peopled.has(sp.id) && !(!sp.machine && listed.some((path) => within(placeOf.get(sp.id), path))));
-    const rows = collapsed
-      ? [...list.flatMap(withKids), ...(empty.length ? [div().mx(8).my(5).h(1).flex_none().bg(t.border), ...empty.map(railSpace)] : [])]
-      : [
-        ...groups.flatMap((g) => byFolder && g.folder ? [box(g)] : [header(g), ...(this.folded.has(g.id) ? [] : g.members.flatMap(withKids))]),
-        ...(empty.length ? [div().px(8).pt(10).pb(5).flex_none().text_size(11).font_medium().text_color(t.dim).child("No agents"), ...empty.map(spaceRow)] : []),
-        ...projectSections,
-      ];
+    // Each row joins the list as it's made: keyboard rows made since the last one are inside it.
+    const rows = [];
+    const put = (part) => (el) => { rows.push(el); for (const n of navAll[part]) if (n.top === null) n.top = rows.length - 1; };
+    if (collapsed) {
+      list.forEach((a, i) => withKids(a, i).forEach(put("groups")));
+      if (empty.length) { put("empty")(div().mx(8).my(5).h(1).flex_none().bg(t.border)); empty.forEach((sp) => put("empty")(railSpace(sp))); }
+    } else {
+      groups.forEach((g) => {
+        if (byFolder && g.folder) return put("groups")(box(g));
+        put("groups")(header(g));
+        if (!this.folded.has(g.id)) g.members.forEach((a, i) => withKids(a, i).forEach(put("groups")));
+      });
+      if (empty.length) put("empty")(div().px(8).pt(10).pb(5).flex_none().text_size(11).font_medium().text_color(t.dim).child("No agents"));
+      empty.forEach((sp) => put("empty")(spaceRow(sp)));
+      projectSections.forEach((make) => put("projects")(make()));
+    }
+    this.nav = [...navAll.groups, ...navAll.empty, ...navAll.projects];
+    // The cursor starts on the agent you're in, else the first row.
+    if (!this.nav.some((n) => n.id === this.cursor)) {
+      const mine = list.find((a) => a.focused);
+      this.cursor = (this.nav.find((n) => mine && n.id === `ag-${mine.address}`) ?? this.nav[0])?.id ?? null;
+    }
 
     return v_flex()
       .size_full()
       .min_h(0)
+      .track_focus(this.handle)
+      .on_key_down((e, cx) => this.onKey(e, cx))
       .bg(t.chrome)
       .border_t(1)
       .border_color(t.border)
@@ -915,7 +1009,7 @@ export default class Agents extends View {
       .when(list.length === 0 && !collapsed, (el) =>
         el.child(div().px(12).pb(6).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
-      .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode("always").children(rows))
+      .child(v_flex().id("ag-list").flex_1().min_h(0).px(collapsed ? 0 : 8).overflow_y_scrollbar().mode("always").track_scroll(this.scroll).children(rows))
       .when(collapsed, (el) =>
         el.child(
           h_flex()
