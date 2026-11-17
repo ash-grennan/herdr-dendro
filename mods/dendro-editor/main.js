@@ -1,9 +1,9 @@
 // A small editor for the main area: files opened from the Files panel, as tabs, with
 // save (Ctrl+S), a modified dot, and reload when the file changes on disk (an agent's edit).
 // Built on Herdr's own Editor (syntax highlighting, line numbers, folding).
-import { View, div, svg } from "gpui-kit";
+import { View, div, svg, image } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
-import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home, spaces, window, nextCommand } from "herdr";
+import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home, spaces, window, nextCommand, exec, appHome } from "herdr";
 import { fileIcon } from "./icons.js";
 // A file's icon: its glyph, tinted by its type.
 const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
@@ -18,6 +18,39 @@ const languageOf = (path) => {
 // Markdown opens rendered (Preview), with Edit beside it; prose wraps instead of scrolling sideways.
 const isMarkdown = (path) => /\.(md|markdown|mdx)$/i.test(path);
 const isProse = (path) => isMarkdown(path) || /\.(txt|text|rst|adoc)$/i.test(path);
+// Pictures in a Markdown preview. TextView draws none, so the preview is split at every line that is
+// only a picture (Markdown or <img>), and each is drawn with image(). That reads only from Herdr's
+// own folder, so each local picture gets a link (a copy on Windows) under data/dendro-editor/img/.
+// Pictures on the web or on another machine show as a link with their alt text.
+const MD_IMG = /^\s*\[?\s*!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+["'][^"']*["'])?\s*\)(?:\s*\]\([^)]*\))?\s*$/;
+const HTML_IMG = /^\s*(?:<(?:p|a)\b[^>]*>\s*)*<img\b([^>]*)>\s*(?:<\/(?:p|a)>\s*)*$/i;
+const attr = (attrs, name) => new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, "i").exec(attrs)?.[1];
+function markdownParts(text) {
+  const parts = [], buf = [];
+  let fence = null;
+  const flush = () => { if (buf.length) parts.push({ text: buf.splice(0).join("\n") }); };
+  for (const line of text.split("\n")) {
+    const f = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (f) fence = !fence ? f[1] : f[1].startsWith(fence) ? null : fence;
+    const md = !fence && !f && MD_IMG.exec(line), html = !fence && !f && !md && HTML_IMG.exec(line);
+    const src = md ? md[2] ?? md[3] : html && attr(html[1], "src");
+    if (src) { flush(); parts.push({ src, alt: (md ? md[1] : attr(html[1], "alt")) ?? "" }); }
+    else buf.push(line);
+  }
+  flush();
+  return parts;
+}
+const hash = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0; return h.toString(16); };
+// A picture's path from the Markdown file it's in; null for a URL.
+function picturePath(doc, src) {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src) && !/^[a-z]:[\\/]/i.test(src)) return null;
+  let p = src.split(/[?#]/)[0];
+  try { p = decodeURI(p); } catch {}
+  if (!/^([\\/]|[a-z]:)/i.test(p)) p = doc.path.replace(/[^\\/]*$/, "") + p;
+  const out = [];
+  for (const part of p.split(/[\\/]/)) part === ".." ? out.length > 1 && out.pop() : part !== "." && out.push(part);
+  return out.join(doc.path.includes("\\") && !doc.path.includes("/") ? "\\" : "/");
+}
 const OPEN = "dendro.open", DIRTY = "dendro.editor.dirty";
 // Open files belong to the space they were opened in: each space has its own tabs.
 const spaceNow = () => spaces().find((s) => s.active)?.id ?? "";
@@ -29,6 +62,7 @@ export default class DendroEditor extends View {
     this.activeBy = {};      // space id -> the path its editor shows
     this.seen = undefined;   // the last open request handled
     this.handle = cx.focus_handle();
+    this.pictures = new Map(); // a picture's path -> its name in Herdr's folder, null while linking, false if missing
     if (shared(DIRTY)) setShared(DIRTY, null); // left over from a run that ended with unsaved edits
     cx.timer.every(2000, (cx) => this.poll(cx));
     // The keyboard: given by Ctrl+Space E, Enter on a file in Files, or Alt+H/J/K/L onto the editor.
@@ -172,6 +206,37 @@ export default class DendroEditor extends View {
     cx.notify();
   }
 
+  // The Markdown preview: text, and the pictures that stand on their own line.
+  preview(d, t, cx) {
+    return markdownParts(d.state.value()).map((part, i) => {
+      if (part.text !== undefined) return TextView.markdown(`dendro-md-text-${d.path}-${i}`, part.text).selectable(true);
+      const path = d.on ? null : picturePath(d, part.src), name = path ? this.picture(path, cx) : undefined;
+      if (name) return div().py(6).child(image(name).max_w_full());
+      const label = part.alt || part.src.split(/[\\/]/).pop();
+      return TextView.markdown(`dendro-md-img-${d.path}-${i}`, name === false ? `*Picture not found: ${part.src}*` : name === null ? "" : `[Picture: ${label}](${part.src})`);
+    });
+  }
+
+  // A picture's name in Herdr's folder, linking it there on first use.
+  picture(path, cx) {
+    if (this.pictures.has(path)) return this.pictures.get(path);
+    this.pictures.set(path, null);
+    const ext = (/\.[a-z0-9]{1,5}$/i.exec(path)?.[0] ?? ".png").toLowerCase();
+    const name = `data/dendro-editor/img/${hash(path)}${ext}`, dir = appHome() + "/data/dendro-editor/img";
+    cx.spawn(async (cx) => {
+      let ok = false;
+      try {
+        const r = window()?.platform === "windows"
+          ? await exec("powershell", ["-NoProfile", "-Command", "& { param($f, $d, $to) if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { exit 1 }; New-Item -ItemType Directory -Force -Path $d | Out-Null; Copy-Item -LiteralPath $f -Destination $to -Force } " + [path, dir, appHome() + "/" + name].map((s) => "'" + s.replace(/['‘’‚‛]/g, "$&$&") + "'").join(" ")])
+          : await exec("sh", ["-c", '[ -f "$1" ] && mkdir -p "$2" && ln -sfn "$1" "$3"', "picture", path, dir, appHome() + "/" + name]);
+        ok = r.code === 0;
+      } catch {}
+      this.pictures.set(path, ok ? name : false);
+      cx.notify();
+    });
+    return null;
+  }
+
   render(cx) {
     const request = shared(OPEN);
     if (request?.at && request.at !== this.seen) { this.seen = request.at; if (request.space) this.open(request, cx); }
@@ -232,7 +297,7 @@ export default class DendroEditor extends View {
           .child(button("dendro-overwrite", "Keep mine & save", true, (_e, cx) => this.save(cx, true), true)))))
       .child(d?.state && d.preview
         ? div().id(`dendro-md-${d.path}`).flex_1().min_h(0).min_w(0).overflow_y_scrollbar().px(28).py(18).text_size(14)
-          .child(TextView.markdown(`dendro-md-text-${d.path}`, d.state.value()).selectable(true))
+          .child(v_flex().gap(12).children(this.preview(d, t, cx)))
         : d?.state ? Editor.new(d.state).flex_1().min_h(0)
         : div().flex_1().flex().items_center().justify_center().text_color(t.dim)
           .child(d ? (d.error ?? "Opening…") : `Click a file in Files, or press ${window()?.platform === "macos" ? "⌘P" : "Alt+P"} to find one`));
