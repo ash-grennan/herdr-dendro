@@ -20,8 +20,9 @@ const isMarkdown = (path) => /\.(md|markdown|mdx)$/i.test(path);
 const isProse = (path) => isMarkdown(path) || /\.(txt|text|rst|adoc)$/i.test(path);
 // Pictures in a Markdown preview. TextView draws none, so the preview is split at every line that is
 // only a picture (Markdown or <img>), and each is drawn with image(). That reads only from Herdr's
-// own folder, so each local picture gets a link (a copy on Windows) under data/dendro-editor/img/.
-// Pictures on the web or on another machine show as a link with their alt text.
+// own folder, so each local picture gets a link (a copy on Windows) under data/dendro-editor/img/,
+// named with the file's modified time: Herdr keeps an image by its name, so a changed picture gets
+// a new link (and its old one goes). Pictures on the web or on another machine show as a link.
 const MD_IMG = /^\s*\[?\s*!\[([^\]]*)\]\(\s*(?:<([^>]+)>|([^)\s]+))(?:\s+["'][^"']*["'])?\s*\)(?:\s*\]\([^)]*\))?\s*$/;
 const HTML_IMG = /^\s*(?:<(?:p|a)\b[^>]*>\s*)*<img\b([^>]*)>\s*(?:<\/(?:p|a)>\s*)*$/i;
 const attr = (attrs, name) => new RegExp(`\\b${name}\\s*=\\s*["']([^"']*)["']`, "i").exec(attrs)?.[1];
@@ -40,6 +41,8 @@ function markdownParts(text) {
   flush();
   return parts;
 }
+// A PowerShell string: single quotes, curly ones too, doubled.
+const quote = (s) => "'" + s.replace(/['‘’‚‛]/g, "$&$&") + "'";
 const hash = (s) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 0x01000193) >>> 0; return h.toString(16); };
 // A picture's path from the Markdown file it's in; null for a URL.
 function picturePath(doc, src) {
@@ -63,6 +66,7 @@ export default class DendroEditor extends View {
     this.seen = undefined;   // the last open request handled
     this.handle = cx.focus_handle();
     this.pictures = new Map(); // a picture's path -> its name in Herdr's folder, null while linking, false if missing
+    this.pictureTimes = new Map(); // a picture's path -> its modified time when linked, "-" if missing
     if (shared(DIRTY)) setShared(DIRTY, null); // left over from a run that ended with unsaved edits
     cx.timer.every(2000, (cx) => this.poll(cx));
     // The keyboard: given by Ctrl+Space E, Enter on a file in Files, or Alt+H/J/K/L onto the editor.
@@ -142,6 +146,7 @@ export default class DendroEditor extends View {
   // Follow the file on disk while it's open: reload it when untouched, flag it when edited here too.
   poll(cx) {
     const d = this.doc();
+    if (d?.preview && !d.on) this.checkPictures(cx);
     if (!d?.state || d.busy) return;
     cx.spawn(async (cx) => {
       const text = await readTextFile(d.path, { on: d.on }).catch(() => undefined);
@@ -221,20 +226,40 @@ export default class DendroEditor extends View {
   picture(path, cx) {
     if (this.pictures.has(path)) return this.pictures.get(path);
     this.pictures.set(path, null);
-    const ext = (/\.[a-z0-9]{1,5}$/i.exec(path)?.[0] ?? ".png").toLowerCase();
-    const name = `data/dendro-editor/img/${hash(path)}${ext}`, dir = appHome() + "/data/dendro-editor/img";
+    const ext = (/\.[a-z0-9]{1,5}$/i.exec(path)?.[0] ?? ".png").toLowerCase(), id = hash(path), dir = appHome() + "/data/dendro-editor/img";
     cx.spawn(async (cx) => {
-      let ok = false;
+      let time = null;
       try {
         const r = window()?.platform === "windows"
-          ? await exec("powershell", ["-NoProfile", "-Command", "& { param($f, $d, $to) if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { exit 1 }; New-Item -ItemType Directory -Force -Path $d | Out-Null; Copy-Item -LiteralPath $f -Destination $to -Force } " + [path, dir, appHome() + "/" + name].map((s) => "'" + s.replace(/['‘’‚‛]/g, "$&$&") + "'").join(" ")])
-          : await exec("sh", ["-c", '[ -f "$1" ] && mkdir -p "$2" && ln -sfn "$1" "$3"', "picture", path, dir, appHome() + "/" + name]);
-        ok = r.code === 0;
+          ? await exec("powershell", ["-NoProfile", "-Command", "& { param($f, $d, $h, $x) if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { exit 1 }; $m = (Get-Item -LiteralPath $f).LastWriteTimeUtc.Ticks; New-Item -ItemType Directory -Force -Path $d | Out-Null; Remove-Item -Path \"$d/$h-*\" -ErrorAction SilentlyContinue; Copy-Item -LiteralPath $f -Destination \"$d/$h-$m$x\" -Force; $m } " + [path, dir, id, ext].map(quote).join(" ")])
+          : await exec("sh", ["-c", '[ -f "$1" ] || exit 1; m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1") || exit 1; mkdir -p "$2" && rm -f "$2/$3"-* && ln -s "$1" "$2/$3-$m$4" && echo "$m"', "picture", path, dir, id, ext]);
+        if (r.code === 0) time = r.stdout.trim();
       } catch {}
-      this.pictures.set(path, ok ? name : false);
+      this.pictures.set(path, time ? `data/dendro-editor/img/${id}-${time}${ext}` : false);
+      this.pictureTimes.set(path, time ?? "-");
       cx.notify();
     });
     return null;
+  }
+
+  // While a preview shows (on the editor's 2s poll): a picture changed on disk, gone, or back
+  // again is forgotten, so the next draw links it afresh.
+  checkPictures(cx) {
+    const paths = [...this.pictures.keys()].filter((p) => this.pictures.get(p) !== null);
+    if (!paths.length || this.checking) return;
+    this.checking = true;
+    cx.spawn(async (cx) => {
+      try {
+        const r = window()?.platform === "windows"
+          ? await exec("powershell", ["-NoProfile", "-Command", "& { foreach ($f in $args) { if (Test-Path -LiteralPath $f -PathType Leaf) { (Get-Item -LiteralPath $f).LastWriteTimeUtc.Ticks } else { '-' } } } " + paths.map(quote).join(" ")])
+          : await exec("sh", ["-c", 'for f; do stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null || echo -; done', "pictures", ...paths]);
+        const times = r.stdout.split(/\r?\n/);
+        const stale = paths.filter((p, i) => (times[i] ?? "").trim() !== this.pictureTimes.get(p));
+        for (const p of stale) { this.pictures.delete(p); this.pictureTimes.delete(p); }
+        if (stale.length) cx.notify();
+      } catch {}
+      this.checking = false;
+    });
   }
 
   render(cx) {
