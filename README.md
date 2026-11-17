@@ -16,7 +16,7 @@ A [Herdr](https://herdr.dev) layout for running several coding agents at once.
 
 **Built-in editor.** Files open in tabs beside the chat and reload when an agent changes them.
 
-![A file open in the editor, marked in the Files tree](docs/screenshots/editor.png)
+![A file open in the editor beside the agents, with Changes and Files hidden](docs/screenshots/editor.png)
 
 **Keyboard first.** `Ctrl+Space` and one key reaches any panel, file or project; the panels take `j` `k`, `Enter` and `Esc`.
 
