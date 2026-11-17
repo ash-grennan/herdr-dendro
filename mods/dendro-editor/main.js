@@ -1,10 +1,12 @@
 // A small editor for the main area: files opened from the Files panel, as tabs, with
 // save (Ctrl+S), a modified dot, and reload when the file changes on disk (an agent's edit).
 // Built on Herdr's own Editor (syntax highlighting, line numbers, folding).
-import { View, div, svg, image } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState, TextView } from "gpui-base";
 import { shared, setShared, readTextFile, writeTextFile, theme, settings, run, home, spaces, window } from "herdr";
 import { fileIcon } from "./icons.js";
+// A file's icon: its glyph, tinted by its type.
+const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
 
 // The Editor's language names, where they differ from the file extension.
 const LANG = { ts: "js", tsx: "js", mts: "js", cts: "js", jsx: "js", mjs: "js", cjs: "js", toml: "yaml", jsonc: "json", svelte: "html", vue: "html", htm: "html", yml: "yaml" };
@@ -167,7 +169,7 @@ export default class DendroEditor extends View {
         .hover((s) => s.bg(on ? t.background : t.hover))
         .on_click((_e, cx) => { this.active = doc.path; cx.notify(); })
         .on_mouse_down("middle", (_e, cx) => { cx.stop_propagation(); this.closeDoc(doc.path, cx); })
-        .child(image(fileIcon(doc.name)).size(14).flex_none())
+        .child(fileGlyph(doc.name, t, 14))
         .child(div().max_w(180).truncate().text_size(12.5).child(doc.name))
         .child(div().id(`close-${doc.path}`).size(18).flex_none().flex().items_center().justify_center().rounded(4)
           .hover((s) => s.bg(t.hover)).on_mouse_down("left", stop).on_click((_e, cx) => { cx.stop_propagation(); this.closeDoc(doc.path, cx); })

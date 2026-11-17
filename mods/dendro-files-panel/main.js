@@ -1,8 +1,10 @@
-// Files with vscode-icons and per-folder colours. Based on Herdr's shipped `files` mod.
-import { View, div, svg, image } from "gpui-kit";
+// Files with file-type icons and per-folder colours. Based on Herdr's shipped `files` mod.
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, exec, watchFolder, theme, window, shared, setShared, run, openOverlay, nextCommand, writeTextFile } from "herdr";
-import { fileIcon, folderIcon, plainFolder } from "./icons.js";
+import { fileIcon, plainFolder } from "./icons.js";
+// A file's icon: its glyph, tinted by its type.
+const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
 
 const INDENT = 16;
 // Folder colours come from the theme's bright ANSI colours, picked by name, so `src`
@@ -148,7 +150,7 @@ export default class Files extends View {
       .on_key_down((e, cx) => { if (e.key === "escape") { cx.stop_propagation(); this.cancelCreate(cx); } })
       .child(h_flex().h(26).pl(8 + depth * INDENT).pr(8).gap(6).items_center()
         .child(div().w(12).flex_none())
-        .child(c.kind === "folder" ? svg(plainFolder(false)).size(16).flex_none().text_color(folderColor(typed, t)) : image(fileIcon(typed || "untitled")).size(16).flex_none())
+        .child(c.kind === "folder" ? svg(plainFolder(false)).size(16).flex_none().text_color(folderColor(typed, t)) : fileGlyph(typed || "untitled", t, 16))
         .child(Input.new(this.input).flex_1().min_w(0).h(22).px(6).rounded(5).border_1().border_color(c.error ? t.ansi1 : t.accent).bg(t.background).text_size(13).text_color(t.foreground)))
       .when(Boolean(c.error), el => el.child(div().pl(8 + depth * INDENT + 36).pr(8).pb(4).text_size(11.5).text_color(t.ansi1).child(c.error)));
   }
@@ -248,10 +250,8 @@ export default class Files extends View {
     for (const entry of this.entries.get(prefix) ?? []) {
       if (out.length >= TOTAL) break;
       const path = prefix ? `${prefix}/${entry.name}` : entry.name, open = this.folders.has(path), mark = this.marks[`${this.root}/${path}`];
-      const color = entry.dir ? folderColor(entry.name, t) : null, typed = entry.dir && folderIcon(entry.name, open);
-      const icon = !entry.dir ? image(fileIcon(entry.name)).size(16).flex_none()
-        : typed ? image(typed).size(16).flex_none()
-        : svg(plainFolder(open)).size(16).flex_none().text_color(color);
+      const color = entry.dir ? folderColor(entry.name, t) : null;
+      const icon = !entry.dir ? fileGlyph(entry.name, t, 16) : svg(plainFolder(open)).size(16).flex_none().text_color(color);
       const editing = !entry.dir && this.opened === `${this.root}/${path}`;
       out.push(h_flex().id(`file-${path}`).relative().when(editing, el => el.bg(t.selected)).h(26).flex_none().pl(8 + depth * INDENT).pr(8).gap(6).items_center().rounded(6).cursor_pointer().hover(s => s.bg(t.hover))
         .on_click((_e, cx) => entry.dir ? this.toggle(path, cx) : this.show(path, cx))

@@ -1,6 +1,7 @@
 // Copy of mods/dendro-files-panel/icons.js (synced by install.sh; edit that one).
-// File and folder icons from vscode-icons (MIT, see icons/LICENSE-vscode-icons.txt).
-// Lookup order: exact file name, then the longest matching extension, then a default.
+// File icons: a Lucide glyph (ISC, see LICENSE-lucide.txt) for each kind of file, tinted by its
+// type with the theme's ANSI colours, so the colours follow the theme. No logos.
+// Lookup order: exact file name, then a name prefix, then the longest matching extension, then a default.
 const DIR = "mods/dendro-files-panel/icons";
 
 const NAMES = {
@@ -44,35 +45,58 @@ const EXT = {
   ttf: "font", otf: "font", woff: "font", woff2: "font", mp3: "audio", wav: "audio", ogg: "audio", flac: "audio",
   mp4: "video", mov: "video", webm: "video", mkv: "video", pdf: "pdf", zip: "zip", gz: "zip", tar: "zip", tgz: "zip", "7z": "zip", rar: "zip",
   exe: "binary", bin: "binary", dll: "binary", so: "binary", o: "binary", pem: "cert", crt: "cert", key: "key",
-  txt: "text", lock: "text",
+  txt: "text", lock: "lock",
 };
 
-// Folder name → vscode-icons folder_type_<x>.
-const FOLDERS = {
-  src: "src", source: "src", dist: "dist", out: "dist", build: "dist", release: "dist",
-  test: "test", tests: "test", __tests__: "test", spec: "test", e2e: "e2e", cypress: "cypress", coverage: "coverage",
-  doc: "docs", docs: "docs", node_modules: "node", public: "public", static: "public", www: "public",
-  asset: "asset", assets: "asset", res: "asset", resources: "asset", image: "images", images: "images", img: "images", icons: "images", art: "images",
-  config: "config", configs: "config", conf: "config", settings: "config", script: "script", scripts: "script",
-  lib: "library", libs: "library", vendor: "library", component: "component", components: "component",
-  ".github": "github", ".vscode": "vscode", ".idea": "idea", ".husky": "husky", ".git": "git", ".claude": "claude", ".cargo": "cargo",
-  style: "style", styles: "style", css: "style", api: "api", hooks: "hook", hook: "hook", helpers: "helper", helper: "helper", utils: "helper", util: "helper",
-  tools: "tools", tool: "tools", views: "view", view: "view", pages: "view", screens: "view", models: "model", model: "model", schema: "model", schemas: "model",
-  controllers: "controller", controller: "controller", routes: "route", route: "route", router: "route", services: "services", service: "services",
-  store: "redux", stores: "redux", redux: "redux", state: "redux", types: "typings", typings: "typings", "@types": "typings",
-  locale: "locale", locales: "locale", i18n: "locale", lang: "locale", fonts: "fonts", font: "fonts", db: "db", database: "db", migrations: "db",
-  docker: "docker", mock: "mock", mocks: "mock", __mocks__: "mock", tmp: "temp", temp: "temp", log: "log", logs: "log",
-  include: "include", includes: "include", bin: "binary", app: "app", apps: "app", plugin: "plugin", plugins: "plugin", mods: "plugin",
-  packages: "package", package: "package", pkg: "package", middleware: "middleware", middlewares: "middleware",
-  venv: "python", ".venv": "python", __pycache__: "python", theme: "theme", themes: "theme", template: "template", templates: "template", layouts: "template",
-  audio: "audio", sounds: "audio", video: "video", cli: "cli", cmd: "cli", server: "server", client: "client", shared: "shared", common: "shared",
-  android: "android", ios: "ios", k8s: "kubernetes", kubernetes: "kubernetes", aws: "aws", prisma: "prisma", stories: "story", ".storybook": "story",
-  fixtures: "mock",
-};
+// Type -> [glyph, colour]: the colour is a theme key, or null for the theme's muted text.
+const TYPES = {};
+const add = (glyph, color, types) => { for (const type of types.split(" ")) TYPES[type] = [glyph, color]; };
+// Source code, coloured by language.
+add("file-code", "ansi11", "js");
+add("file-code", "ansi12", "typescript typescriptdef css");
+add("file-code", "ansi14", "reactjs reactts go dartlang");
+add("file-code", "ansi3", "python ocaml zig mojo xml handlebars pug ejs");
+add("file-code", "ansi9", "rust swift html svelte ruby java scala erlang");
+add("file-code", "ansi4", "c cheader cpp cppheader lua r");
+add("file-code", "ansi13", "kotlin php haskell elixir julia csharp scss sass astro");
+add("file-code", "ansi10", "vue clojure");
+add("file-code", "ansi5", "less nix terraform graphql prisma protobuf");
+add("file-terminal", "ansi10", "shell powershell");
+add("file-terminal", "ansi3", "cmake just");
+// Data and settings.
+add("file-braces", "ansi11", "json json5");
+add("file-cog", "ansi5", "yaml toml");
+add("file-cog", null, "ini config editorconfig");
+add("file-cog", "ansi12", "tsconfig jsconfig");
+add("file-cog", "ansi13", "eslint prettier babel nodemon turbo stylelint biome ruff vite vitest jest tailwind webpack rollup postcss");
+add("file-cog", "ansi9", "git");
+add("file-box", "ansi3", "npm yarn pnpm bun bundler pip poetry uv cargo gradle maven deno");
+add("file-box", "ansi12", "docker");
+add("file-box", "ansi5", "wasm");
+add("file-box", null, "binary");
+add("file-lock", null, "lock");
+add("file-lock", "ansi11", "dotenv");
+add("file-key", "ansi11", "key");
+add("file-key", "ansi10", "cert");
+add("file-database", "ansi6", "sql db");
+add("file-spreadsheet", "ansi10", "csv");
+// Prose and media.
+add("file-text", "ansi12", "markdown mdx");
+add("file-text", "ansi3", "claude agents");
+add("file-text", "ansi11", "license");
+add("file-text", "ansi1", "pdf");
+add("file-text", null, "text log");
+add("file-image", "ansi13", "image svg");
+add("file-play", "ansi13", "video");
+add("file-music", "ansi13", "audio");
+add("file-type", "ansi5", "font");
+add("file-archive", "ansi3", "zip");
+add("file-diff", "ansi2", "diff");
 
 // Own keys only: a file named "constructor" must not find Object.prototype's.
 const pick = (map, key) => Object.prototype.hasOwnProperty.call(map, key) ? map[key] : undefined;
 
+// { path, color }: the glyph to draw, and the theme key to tint it with (null: muted text).
 export function fileIcon(name) {
   const lower = name.toLowerCase();
   let type = pick(NAMES, lower);
@@ -81,13 +105,9 @@ export function fileIcon(name) {
     const parts = lower.split(".");
     for (let i = 1; i < parts.length && !type; i++) type = pick(EXT, parts.slice(i).join("."));
   }
-  return type ? `${DIR}/file_type_${type}.svg` : `${DIR}/default_file.svg`;
+  const [glyph, color] = (type && pick(TYPES, type)) || ["file", null];
+  return { path: `${DIR}/${glyph}.svg`, color };
 }
 
-// A known folder's full-colour icon, or null (draw a tinted folder instead).
-export function folderIcon(name, open) {
-  const type = pick(FOLDERS, name.toLowerCase());
-  return type ? `${DIR}/folder_type_${type}${open ? "_opened" : ""}.svg` : null;
-}
-
+// Folders: one glyph, open or closed, tinted by the caller.
 export const plainFolder = (open) => `mods/dendro-files-panel/folder${open ? "-open" : ""}.svg`;

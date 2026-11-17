@@ -1,8 +1,10 @@
 // Changes as a list; clicking a file swaps the panel to its diff. Based on Herdr's shipped `changes` mod.
-import { View, div, svg, image } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
 import { spaces, panes, focused, exec, readTextFile, writeTextFile, watchFolder, theme, settings } from "herdr";
 import { fileIcon } from "./icons.js";
+// A file's icon: its glyph, tinted by its type.
+const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
 
 function location() {
   const space = spaces().find((s) => s.active), f = focused();
@@ -277,7 +279,7 @@ export default class Changes extends View {
       return root
         .child(h_flex().h(42).flex_none().pl(8).pr(10).gap(6).items_center().border_b(1).border_color(t.border)
           .child(iconButton("changes-back", "mods/dendro-diff-panel/chevron-left.svg", true, (_e, cx) => this.back(cx)))
-          .child(image(fileIcon(name)).size(16).flex_none())
+          .child(fileGlyph(name, t, 16))
           .child(h_flex().flex_1().min_w(0).gap(6).items_center()
             .child(div().min_w(0).flex_none().max_w(220).truncate().font_semibold().child(name))
             .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(parts.join("/"))))
@@ -307,7 +309,7 @@ export default class Changes extends View {
           const parts = f.path.split("/"), name = parts.pop();
           return h_flex().id(`change-${f.path}`).h(26).flex_none().px(8).gap(6).items_center().rounded(6).cursor_pointer().hover((s) => s.bg(t.hover))
             .on_click((_e, cx) => { this.handle.focus(); this.pick(f.path, cx); })
-            .child(image(fileIcon(name)).size(16).flex_none())
+            .child(fileGlyph(name, t, 16))
             .child(h_flex().flex_1().min_w(0).gap(6).items_center()
               .child(div().flex_none().max_w(200).truncate().text_color(f.status === "D" ? t.muted : t.foreground).child(name))
               .child(div().flex_1().min_w(0).truncate().text_size(11).text_color(t.dim).child(parts.join("/"))))

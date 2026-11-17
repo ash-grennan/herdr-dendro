@@ -23,7 +23,7 @@ A [Herdr](https://herdr.dev) layout for working with several coding agents at on
 - **Chat | Editor** switch, and buttons to show or hide Files and Changes
 
 **Files and Changes**
-- Files panel with vscode-icons, coloured folders, indent guides and git status marks
+- Files panel with file-type icons coloured by type, coloured folders, indent guides and git status marks
 - Right-click in Files for **New File** and **New Folder**
 - Changes panel with per-file diffs; click a line in a diff to edit it in place
 - Commit from the Changes panel
@@ -107,7 +107,6 @@ MIT, see `LICENSE`. This covers the layout, the mods' code and the original SVGs
 
 ### Third-party assets
 
-- **[vscode-icons](https://github.com/vscode-icons/vscode-icons)**, MIT, notice in `mods/dendro-files-panel/icons/LICENSE-vscode-icons.txt`. Covers everything in `mods/dendro-files-panel/icons/`, plus `folder.svg` and `folder-open.svg` in that mod and in `mods/dendro-agents-panel/` (recoloured copies of its default folder icons; notice copied there too).
-- **[Lucide](https://lucide.dev)**, ISC (some icons MIT via Feather), notice in `LICENSE-lucide.txt` inside each mod that uses them: `chevron-*.svg`, `x.svg`, `terminal.svg`, `sort-folder.svg`, `file-plus.svg`, `folder-plus.svg`.
+- **[Lucide](https://lucide.dev)**, ISC (some icons MIT via Feather), notice in `LICENSE-lucide.txt` inside each mod that ships them: everything in `mods/dendro-files-panel/icons/` (the file-type icons), plus `folder.svg`, `folder-open.svg`, `chevron-*.svg`, `x.svg`, `terminal.svg`, `sort-folder.svg`, `file-plus.svg` and `folder-plus.svg`.
 
-Product and language logos among the file icons are trademarks of their owners and are used only to label file types.
+The file icons are plain glyphs tinted with the theme's colours; no product or language logos are included.

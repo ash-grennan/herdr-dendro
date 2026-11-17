@@ -3,10 +3,12 @@
 // Lists the files of the repo you're in (git's list: tracked and new, not ignored), else of the
 // folder (skipping dependency and build folders). Empty, it shows the files you opened last.
 // ↑/↓ move, Enter opens, Esc closes.
-import { View, div, svg, image } from "gpui-kit";
+import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, panes, focused, exec, run, theme, props, closeOverlay, setShared, checking, window } from "herdr";
 import { fileIcon } from "./icons.js";
+// A file's icon: its glyph, tinted by its type.
+const fileGlyph = (name, t, size) => { const f = fileIcon(name); return svg(f.path).size(size).flex_none().text_color(t[f.color] ?? t.muted); };
 import { score } from "./fuzzy.js";
 
 const MAX_FILES = 50000, SHOWN = 200, ROW = 30, RECENT = 30, FIT = 12; // FIT: rows on show at once
@@ -136,7 +138,7 @@ export default class QuickOpen extends View {
       return h_flex().id(`qo-${i}`).h(ROW).flex_none().px(10).gap(9).items_center().rounded(7).cursor_pointer()
         .when(i === this.at, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
         .on_click(() => this.open(r))
-        .child(image(fileIcon(name)).size(16).flex_none())
+        .child(fileGlyph(name, t, 16))
         .child(div().flex_none().max_w(260).truncate().text_color(t.foreground).child(name))
         .child(div().flex_1().min_w(0).truncate().text_size(11.5).text_color(t.dim).child(dir))
         .when(Boolean(r.recent), (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child("recent")));
