@@ -41,6 +41,8 @@ Press `Ctrl+Space`, then:
 | `e` | Chat ⇄ Editor | | `b` | Sidebar |
 | `t` | Terminal strip | | `,` `?` | Settings, all keys |
 
+While dendro shows, `Ctrl+Space` doesn't reach terminal programs. Emacs uses it to set the mark; to use another key, change `ctrl-space` in the `layout:dendro` section of `~/.config/herdr-app/keys.json`.
+
 ## Install
 
 Needs Herdr 0.1.16.
